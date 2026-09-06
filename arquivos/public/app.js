@@ -1252,9 +1252,26 @@ window.cinemaDiag = async () => {
     pessoas.push(info);
   }
 
+  // O navegador aceita o pedido de cancelamento de eco mas nem sempre entrega.
+  // Varios navegadores de celular respondem 'false' aqui - e ai o unico
+  // anti-eco que sobra e o nosso, feito na mao.
+  let processamentoDoNavegador = 'sem microfone';
+  if (rawMic && rawMic.getAudioTracks()[0]) {
+    const t = rawMic.getAudioTracks()[0];
+    const s = t.getSettings ? t.getSettings() : {};
+    processamentoDoNavegador = {
+      cancelamentoDeEco: s.echoCancellation,
+      supressaoDeRuido: s.noiseSuppression,
+      ganhoAutomatico: s.autoGainControl,
+      dispositivo: t.label || '(sem nome)',
+      taxa: s.sampleRate,
+    };
+  }
+
   return {
     sala: room,
     microfoneLiberado: !!micStream,
+    processamentoDoNavegador,
     euTransmitindo: !!screenStream,
     recebendoTelaDe: sharerId,
     servidor: ws && ws.readyState === 1 ? 'conectado' : 'CAIDO',
