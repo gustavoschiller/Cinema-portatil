@@ -16,8 +16,19 @@ COMO USAR
    - MANDE ESTE LINK PRA GALERA -> ja vem copiado, so colar
    - VOCE ABRE AQUI             -> abre sozinho no seu navegador
 
-3. Todo mundo digita o MESMO nome de sala e clica "Entrar".
-   Escolha um nome dificil: quem souber o nome entra.
+3. Todo mundo digita o MESMO nome de sala e a MESMA senha.
+
+   A senha e da sala, nao do programa: quem chega primeiro
+   escolhe, quem vem depois repete. Em branco = sala aberta,
+   e ai quem souber o nome entra.
+
+   A tela avisa "Voce criou a sala X" quando voce foi o
+   primeiro. Se voce esperava encontrar alguem la dentro e viu
+   esse aviso, alguem digitou o nome errado.
+
+   A senha vale enquanto a sala tem gente. Todo mundo saiu, a
+   sala some e a senha vai junto - da proxima vez, quem chegar
+   primeiro escolhe de novo.
 
 4. O navegador vai pedir o MICROFONE. Permita.
    Quem negar entra "so ouvindo" - escuta os outros, mas
@@ -239,10 +250,8 @@ hospedado so apresenta as pessoas, igual ao daqui.
 
 Passo a passo em HOSPEDAR.md.
 
-Um aviso: com endereco fixo e publico, o nome da sala vira o
-unico segredo. Por isso o servidor aceita uma SENHA DA CASA.
-Quando ela esta ligada, aparece um campo a mais na tela de
-entrada. Aqui em casa ela fica desligada e nada muda.
+Um aviso: com endereco fixo e publico, o nome da sala sozinho
+nao segura ninguem. Use a senha da sala (veja abaixo).
 
 
 O QUE VEM NA PASTA

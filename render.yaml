@@ -8,9 +8,10 @@ services:
     startCommand: node server.js
     healthCheckPath: /config
     envVars:
-      # Senha da casa. Sem ela, qualquer pessoa que descubra o endereco entra
-      # numa sala so acertando o nome dela. Gere um valor no painel do Render.
-      - key: SENHA
-        generateValue: true
+      # A senha e por sala, escolhida por quem cria - nao tem senha aqui.
       - key: MAX_PEERS
         value: "4"
+      # Teto de salas simultaneas: sem isso alguem pode usar o seu servico
+      # como infraestrutura propria.
+      - key: MAX_ROOMS
+        value: "20"

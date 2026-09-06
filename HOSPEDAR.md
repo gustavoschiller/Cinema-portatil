@@ -13,10 +13,13 @@ disso. Ele só entrega a página e passa os recadinhos de conexão — alguns KB
 por sessão. É por isso que o plano gratuito dá conta com folga.
 
 **Muda a segurança.** Hoje o link é aleatório e morre com a sessão: o link *é*
-o segredo. Com endereço fixo e público, o único segredo seria o nome da sala.
-Por isso o servidor agora aceita uma **senha da casa** (variável de ambiente
-`SENHA`). O `render.yaml` já pede pro Render gerar uma. Sem ela, qualquer
-pessoa que descubra o endereço entra numa sala só acertando o nome.
+o segredo. Com endereço fixo e público, o nome da sala sozinho não segura
+ninguém. Por isso cada sala tem **senha própria, escolhida por quem cria**:
+o primeiro a entrar num nome de sala define a senha dali, e quem chegar depois
+precisa dar a mesma. Em branco = sala aberta.
+
+A senha morre com a sala: esvaziou, some. Da próxima vez, quem chegar primeiro
+escolhe de novo — inclusive outra pessoa. Não é conta, é tranca de porta.
 
 ## Passo a passo
 
@@ -48,19 +51,18 @@ git remote add origin https://github.com/SEU-USUARIO/cinema.git && git push -u o
    `rootDir: arquivos`, build, start e health check configurados.
 3. **Apply**. O primeiro deploy leva uns 2 minutos.
 
-### 3. Pegue a senha
+### 3. Pronto
 
-No serviço criado → aba **Environment** → variável `SENHA`. O Render gerou um
-valor aleatório; clique pra revelar e copie.
+Mande pra galera o endereço. Combinem entre vocês o nome da sala e a senha —
+não tem nada pra configurar no painel.
 
-Se preferir uma senha que dê pra ditar no WhatsApp, edite ali mesmo e salve —
-o serviço reinicia sozinho. Use algo longo: quem tiver o endereço pode tentar
-adivinhar. Três ou quatro palavras aleatórias resolvem.
+Quem chega primeiro cria a sala e a senha dela. Quem vem depois digita as duas
+iguais. Se alguém errar o nome da sala, o app avisa na tela: "Você criou a sala
+X" — é assim que se percebe que a pessoa está sozinha numa sala com nome
+errado, em vez de ficar esperando achando que os outros vão chegar.
 
-### 4. Pronto
-
-Mande pra galera o endereço e a senha. Todo mundo digita o mesmo nome de sala,
-a mesma senha, e entra.
+Senha em branco funciona, mas num endereço público significa que qualquer um
+que acerte o nome entra.
 
 ## O incômodo do plano gratuito
 
@@ -89,18 +91,18 @@ passa o filme sobe 3 cópias do vídeo.
 
 ## A versão portátil continua funcionando
 
-Nada disso quebra o `Cinema.bat`. Sem a variável `SENHA` o campo de senha nem
-aparece, e o painel com cloudflared segue igual. Dá pra ter os dois: o
-endereço fixo pro dia a dia, a pasta portátil pra quando o Render estiver fora
-do ar.
+Nada disso quebra o `Cinema.bat`: é o mesmo servidor, com ou sem hospedagem.
+Em casa dá pra deixar a senha em branco — o link do túnel já é secreto e morre
+com a sessão. Dá pra ter os dois: o endereço fixo pro dia a dia, a pasta
+portátil pra quando o Render estiver fora do ar.
 
 ## Variáveis de ambiente
 
 | Variável | Padrão | Pra que serve |
 |---|---|---|
 | `PORT` | 3000 | O Render define sozinho. Não mexa. |
-| `SENHA` | *(vazio)* | Senha da casa. Vazio = sem senha. |
 | `MAX_PEERS` | 4 | Quantas pessoas cabem numa sala. |
+| `MAX_ROOMS` | 20 | Teto de salas abertas ao mesmo tempo. |
 | `TURN_URL` | *(vazio)* | `turn:host:3478`, se você tiver um TURN. |
 | `TURN_USER` | *(vazio)* | Usuário do TURN. |
 | `TURN_PASS` | *(vazio)* | Senha do TURN. |

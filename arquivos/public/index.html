@@ -19,19 +19,19 @@
     <label for="nick">Seu nome</label>
     <input id="nick" placeholder="ex: Gustavo" autocomplete="off">
 
-    <div id="senha-wrap" class="hidden">
-      <label for="senha">Senha da casa</label>
-      <input id="senha" type="password" placeholder="a senha combinada" autocomplete="current-password">
-    </div>
+    <label for="senha">Senha da sala <span class="opt">(opcional)</span></label>
+    <input id="senha" type="password" placeholder="em branco = sala aberta" autocomplete="off">
 
     <div class="roles">
       <button id="btn-enter" class="primary">Entrar na sala</button>
     </div>
 
     <p class="hint">
-      Todo mundo digita o <b>mesmo nome de sala</b>. O navegador vai pedir o
-      <b>microfone</b> — permita, senão você entra só ouvindo.
-      Depois, quem for passar o filme clica em <b>Transmitir</b>.
+      Todo mundo digita o <b>mesmo nome de sala</b> e a <b>mesma senha</b>.
+      Quem chega primeiro é quem define a senha — deixe em branco pra sala
+      aberta. O navegador vai pedir o <b>microfone</b>: permita, senão você
+      entra só ouvindo. Depois, quem for passar o filme clica em
+      <b>Transmitir</b>.
     </p>
     <p id="lobby-status" class="status"></p>
   </div>

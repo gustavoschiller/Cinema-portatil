@@ -9,11 +9,9 @@ const PUBLIC = path.join(__dirname, 'public');
 const PORT = process.env.PORT || 3000;
 const MAX_PEERS = Number(process.env.MAX_PEERS || 4);
 
-// Senha da casa, opcional. Em casa nao precisa: o link do tunel ja e secreto e
-// morre junto com a sessao. Hospedado num endereco fixo e publico, o nome da
-// sala vira o unico segredo - entao ponha uma senha (variavel de ambiente
-// SENHA no painel do Render).
-const SENHA = String(process.env.SENHA || '');
+// Teto de salas simultaneas. Hospedado num endereco publico, sem isso alguem
+// pode abrir sala infinita e usar o servico como infra propria.
+const MAX_ROOMS = Number(process.env.MAX_ROOMS || 20);
 
 process.title = 'Cinema - servidor';
 
@@ -41,7 +39,7 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === '/config') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ iceServers, max: MAX_PEERS, senha: !!SENHA }));
+    res.end(JSON.stringify({ iceServers, max: MAX_PEERS }));
     return;
   }
 
@@ -64,6 +62,10 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 /** @type {Map<string, Set<import('ws').WebSocket>>} */
+// nome da sala -> { peers: Set<ws>, senha: string }
+// A senha e escolhida por quem CRIA a sala. Vazia = sala aberta. Ela vive
+// enquanto a sala tiver gente: esvaziou, some, e o proximo que entrar com esse
+// nome cria a sala de novo e escolhe a senha dele.
 const rooms = new Map();
 let nextId = 1;
 
@@ -72,15 +74,15 @@ function send(ws, msg) {
 }
 
 function broadcast(room, msg, except) {
-  const peers = rooms.get(room);
-  if (!peers) return;
-  for (const p of peers) if (p !== except) send(p, msg);
+  const sala = rooms.get(room);
+  if (!sala) return;
+  for (const p of sala.peers) if (p !== except) send(p, msg);
 }
 
 function findPeer(room, id) {
-  const peers = rooms.get(room);
-  if (!peers) return null;
-  for (const p of peers) if (p.id === id) return p;
+  const sala = rooms.get(room);
+  if (!sala) return null;
+  for (const p of sala.peers) if (p.id === id) return p;
   return null;
 }
 
@@ -134,21 +136,37 @@ wss.on('connection', (ws) => {
     if (msg.type === 'join') {
       if (ws.room) return;
 
-      if (SENHA && String(msg.senha || '') !== SENHA) {
-        send(ws, { type: 'senha-errada' });
+      const room = String(msg.room || '').trim().toLowerCase().slice(0, 60);
+      if (!room) return;
+
+      // espaco e quebra de linha grudados em senha copiada nao contam
+      const senha = String(msg.senha || '').trim().slice(0, 100);
+
+      let sala = rooms.get(room);
+      const criou = !sala;
+
+      if (criou) {
+        if (rooms.size >= MAX_ROOMS) {
+          send(ws, { type: 'lotado' });
+          return;
+        }
+        // primeiro a chegar define a senha da sala (vazia = sala aberta)
+        sala = { peers: new Set(), senha };
+        rooms.set(room, sala);
+      } else if (sala.senha !== senha) {
+        // 'aberta' distingue "errou a senha" de "digitou senha numa sala que
+        // nao tem senha" - erros diferentes, avisos diferentes
+        send(ws, { type: 'senha-errada', aberta: !sala.senha });
         // fecha em vez de deixar tentar de novo na mesma conexao: cada palpite
         // custa um handshake novo
         setTimeout(() => ws.close(), 50);
         return;
       }
 
-      const room = String(msg.room || '').trim().toLowerCase().slice(0, 60);
-      if (!room) return;
-
-      if (!rooms.has(room)) rooms.set(room, new Set());
-      const peers = rooms.get(room);
-
-      if (peers.size >= MAX_PEERS) {
+      if (sala.peers.size >= MAX_PEERS) {
+        // a sala acabou de ser criada por causa deste join; se ele nao entra,
+        // nao pode ficar sala fantasma no mapa
+        if (criou) rooms.delete(room);
         send(ws, { type: 'full', max: MAX_PEERS });
         return;
       }
@@ -165,11 +183,13 @@ wss.on('connection', (ws) => {
         type: 'welcome',
         id: ws.id,
         max: MAX_PEERS,
-        peers: [...peers].map((p) => ({ id: p.id, name: p.name, state: p.state })),
+        criou,                       // criou a sala ou entrou numa existente
+        temSenha: !!sala.senha,
+        peers: [...sala.peers].map((p) => ({ id: p.id, name: p.name, state: p.state })),
       });
 
       broadcast(room, { type: 'peer-joined', id: ws.id, name: ws.name, state: ws.state }, ws);
-      peers.add(ws);
+      sala.peers.add(ws);
       return;
     }
 
@@ -199,11 +219,12 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    const peers = rooms.get(ws.room);
-    if (!peers) return;
-    peers.delete(ws);
+    const sala = rooms.get(ws.room);
+    if (!sala) return;
+    sala.peers.delete(ws);
     broadcast(ws.room, { type: 'peer-left', id: ws.id, name: ws.name }, ws);
-    if (peers.size === 0) rooms.delete(ws.room);
+    // sala vazia deixa de existir - e a senha dela vai junto
+    if (sala.peers.size === 0) rooms.delete(ws.room);
   });
 });
 

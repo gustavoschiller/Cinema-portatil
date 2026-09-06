@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const el = {
   lobby: $('lobby'), stage: $('stage'), video: $('video'),
   room: $('room'), nick: $('nick'), btnEnter: $('btn-enter'),
-  senha: $('senha'), senhaWrap: $('senha-wrap'),
+  senha: $('senha'),
   lobbyStatus: $('lobby-status'),
   overlay: $('overlay'), overlayText: $('overlay-text'),
   chat: $('chat'), log: $('log'), chatForm: $('chat-form'), chatInput: $('chat-input'),
@@ -100,8 +100,6 @@ el.room.addEventListener('keydown', (e) => e.key === 'Enter' && entrar());
 el.nick.addEventListener('keydown', (e) => e.key === 'Enter' && entrar());
 el.senha.addEventListener('keydown', (e) => e.key === 'Enter' && entrar());
 
-// pergunta ao servidor a configuracao antes de qualquer clique: e assim que o
-// campo de senha aparece (so quando a instalacao exige senha)
 let cfgPronta = null;
 
 async function pegarConfig() {
@@ -110,7 +108,6 @@ async function pegarConfig() {
     const cfg = await (await fetch('/config')).json();
     if (cfg.iceServers && cfg.iceServers.length) iceServers = cfg.iceServers;
     if (cfg.max) MAXP = cfg.max;
-    if (cfg.senha) el.senhaWrap.classList.remove('hidden');
     cfgPronta = cfg;
     return cfg;
   } catch {
@@ -202,9 +199,19 @@ function conectar() {
       case 'senha-errada':
         saiu = true; // nao fica tentando reconectar com a senha errada
         el.btnEnter.disabled = false;
-        el.lobbyStatus.textContent = 'Senha da casa errada.';
-        el.senhaWrap.classList.remove('hidden');
+        el.lobbyStatus.textContent = msg.aberta
+          ? 'Essa sala e aberta: deixe a senha em branco.'
+          : 'Senha errada. Essa sala ja existe e tem outra senha.';
         el.senha.value = '';
+        el.senha.focus();
+        pararMic();
+        break;
+
+      case 'lotado':
+        saiu = true;
+        el.btnEnter.disabled = false;
+        el.lobbyStatus.textContent =
+          'O servidor esta com salas demais abertas. Tente daqui a pouco.';
         pararMic();
         break;
 
@@ -224,6 +231,16 @@ function conectar() {
           sys('Reconectado.');
         } else {
           abrirPalco();
+          // dizer que a sala e nova pega o erro mais chato de todos: digitar o
+          // nome errado e ficar esperando sozinho numa sala que so voce tem
+          if (msg.criou) {
+            const tipo = msg.temSenha ? 'com senha' : 'aberta, sem senha';
+            el.overlayText.textContent =
+              'Voce criou a sala "' + room + '" (' + tipo + '). Esperando as outras pessoas...';
+            sys('Voce criou a sala "' + room + '" (' + tipo + ')');
+          } else {
+            sys('Voce entrou na sala "' + room + '"');
+          }
         }
         for (const info of msg.peers) addPeer(info);
         anunciar();
