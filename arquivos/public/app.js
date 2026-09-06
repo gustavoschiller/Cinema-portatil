@@ -880,6 +880,7 @@ function montarMic(raw) {
       hold: 0, aberto: true,
       piso: -60,                 // estimativa do ruido de fundo, em dB
       eco: -60,                  // quanto do som dos outros volta pelo mic
+      amostras: [], conta: 0,    // medidas do eco, ver tickGate
       nivelDb: -90,
     };
     return dst.stream;
@@ -957,10 +958,18 @@ function tickGate() {
   const nivelDb = db(nivel(micChain.an, micChain.buf));
   micChain.nivelDb = nivelDb;
 
-  // Piso de ruido automatico: desce rapido, sobe devagar. Assim ele encontra
-  // sozinho o barulho da casa e nao acompanha a sua voz.
-  if (nivelDb < micChain.piso) micChain.piso += (nivelDb - micChain.piso) * 0.25;
-  else micChain.piso += (nivelDb - micChain.piso) * 0.0006;
+  // Piso de ruido automatico: desce depressa, sobe devagar, pra achar sozinho
+  // o barulho da casa sem acompanhar a sua voz.
+  //
+  // O silencio digital NAO entra na conta. A supressao de ruido do proprio
+  // navegador zera o sinal entre as palavras, e um piso que seguisse esses
+  // zeros desabaria pro fundo da escala em menos de meio segundo. O limiar
+  // ficaria absurdamente baixo e o portao abriria pra qualquer coisa -
+  // inclusive pro eco, que e justamente o que ele deveria barrar.
+  if (nivelDb > -95) {
+    const passo = nivelDb < micChain.piso ? 0.02 : 0.0006;
+    micChain.piso += (nivelDb - micChain.piso) * passo;
+  }
   micChain.piso = Math.max(-85, Math.min(-25, micChain.piso));
 
   const margem = Number(el.gateTh.value);
@@ -973,23 +982,34 @@ function tickGate() {
 
   // Alguem esta falando agora? Medido aqui (desktop) ou avisado por mensagem
   // (unico jeito que funciona no navegador do celular).
-  const outroFalando = referenciaDb() > -70 || referenciaAvisadaDb() > -70;
+  const tocando = Math.max(referenciaDb(), referenciaAvisadaDb());
+  const outroFalando = tocando > -70;
 
   // Quanto do som dos outros volta pelo SEU microfone nao da pra adivinhar:
   // depende de fone, caixa, volume, distancia - varia 40 dB entre aparelhos.
-  // Entao a gente mede. Enquanto o outro fala, o que o seu microfone capta E
-  // o eco; e so aprender esse nivel. Sobe rapido, esquece devagar, e tem teto
-  // pra voce falar junto com alguem nao envenenar a conta.
-  if (outroFalando) {
-    const passo = nivelDb > micChain.eco ? 0.03 : 0.005;
-    micChain.eco += (nivelDb - micChain.eco) * passo;
-  } else {
-    micChain.eco += (micChain.piso - micChain.eco) * 0.002;
+  // Entao a gente mede, guardando o seu nivel enquanto o outro fala.
+  //
+  // O truque esta em como resumir essas amostras. Media nao serve: se voce
+  // falar junto, a sua voz entra na conta, a estimativa sobe e voce se tranca
+  // pra fora - foi exatamente o que aconteceu na primeira versao disto.
+  // O eco ACOMPANHA a fala do outro o tempo todo; a sua voz e esporadica e
+  // fica na cauda alta. Entao usamos um percentil baixo, que ignora a cauda.
+  if (outroFalando && nivelDb > -95) {
+    micChain.amostras.push(nivelDb);
+    if (micChain.amostras.length > 200) micChain.amostras.shift(); // ~5 s
   }
-  micChain.eco = Math.max(micChain.piso, Math.min(micChain.piso + 45, micChain.eco));
 
-  // sem ninguem falando nao existe eco pra barrar
-  const passaEco = !el.antieco.checked || !outroFalando || nivelDb > micChain.eco + 8;
+  micChain.conta = (micChain.conta + 1) % 10;
+  if (micChain.conta === 0 && micChain.amostras.length >= 20) {
+    const ord = [...micChain.amostras].sort((a, b) => a - b);
+    micChain.eco = ord[Math.floor(ord.length * 0.3)];
+  }
+
+  // sem ninguem falando nao ha eco pra barrar; sem amostras ainda nao da pra
+  // afirmar nada, entao nao atrapalha
+  const temEstimativa = micChain.amostras.length >= 20;
+  const passaEco = !el.antieco.checked || !outroFalando || !temEstimativa
+    || nivelDb > micChain.eco + 8;
 
   if (nivelDb > limiar && passaEco) micChain.hold = agora + 300;
   const aberto = !el.gate.checked || agora < micChain.hold;
