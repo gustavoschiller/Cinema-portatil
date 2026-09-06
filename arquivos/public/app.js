@@ -1,0 +1,1232 @@
+const $ = (id) => document.getElementById(id);
+
+const el = {
+  lobby: $('lobby'), stage: $('stage'), video: $('video'),
+  room: $('room'), nick: $('nick'), btnEnter: $('btn-enter'),
+  senha: $('senha'), senhaWrap: $('senha-wrap'),
+  lobbyStatus: $('lobby-status'),
+  overlay: $('overlay'), overlayText: $('overlay-text'),
+  chat: $('chat'), log: $('log'), chatForm: $('chat-form'), chatInput: $('chat-input'),
+  unmute: $('unmute'), badge: $('badge'),
+  warn: $('warn'), warnText: $('warn-text'),
+  side: $('side'), people: $('people'), roomName: $('room-name'), count: $('count'),
+  volFilm: $('vol-film'), volVoice: $('vol-voice'),
+  vFilm: $('v-film'), vVoice: $('v-voice'),
+  duck: $('duck'), ptt: $('ptt'),
+  gate: $('gate'), gateTh: $('gate-th'), vGate: $('v-gate'), meterBar: $('meter-bar'),
+  antieco: $('antieco'), vPiso: $('v-piso'),
+  btnMic: $('btn-mic'), btnDeaf: $('btn-deaf'), btnShare: $('btn-share'),
+  audios: $('audios'),
+};
+
+// ---------- estado ----------
+
+let ws = null;
+let pingTimer = null;
+let saiu = false;          // o usuario clicou em sair: nao reconecta
+let reconectando = false;
+let tentativas = 0;
+let myId = null;
+let myName = 'anon';
+let room = '';
+let MAXP = 4;
+let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+let rawMic = null;         // o que o microfone capta, cru
+let micChain = null;       // filtros + portao de ruido
+let micStream = null;      // 1 faixa de audio: a sua voz, ja filtrada
+let screenStream = null;   // tela + audio do filme (so quem transmite)
+let sharerId = null;       // quem transmite agora ('me' se for voce)
+
+let micOn = true;          // botao do microfone
+let pttOn = false;         // modo "apertar pra falar"
+let pttHeld = false;
+let deaf = false;
+let micAntesDoDeaf = true;
+
+/** @type {Map<string, any>} */
+const peers = new Map();
+
+let audioCtx = null;
+let myRow = null;
+let falandoAgora = false;
+
+let filmeAn = null;        // medidor do filme, usado pelo anti-eco
+let filmeBuf = null;
+let filmeStreamId = null;
+
+const MIC_CONSTRAINTS = {
+  audio: {
+    echoCancellation: true,   // cancela o som do filme que sai do seu alto-falante
+    noiseSuppression: true,
+    autoGainControl: true,
+    channelCount: 1,
+  },
+  video: false,
+};
+
+const TELA_CONSTRAINTS = {
+  video: { frameRate: { ideal: 30, max: 60 } },
+  audio: {
+    // o filme nao e voz: qualquer processamento aqui destroi a trilha
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    channelCount: 2,
+  },
+};
+
+// ---------- lobby ----------
+
+const saved = localStorage.getItem('cinema');
+if (saved) {
+  try {
+    const s = JSON.parse(saved);
+    el.room.value = s.room || '';
+    el.nick.value = s.nick || '';
+    if (typeof s.gate === 'boolean') el.gate.checked = s.gate;
+    if (typeof s.antieco === 'boolean') el.antieco.checked = s.antieco;
+    if (typeof s.duck === 'boolean') el.duck.checked = s.duck;
+    if (typeof s.ptt === 'boolean') el.ptt.checked = s.ptt;
+    // o slider mudou de "dB absoluto" pra "margem acima do ruido": valor
+    // negativo e de uma versao antiga, joga fora
+    if (s.gateTh && Number(s.gateTh) > 0) el.gateTh.value = s.gateTh;
+  } catch { /* ignora */ }
+}
+el.vGate.textContent = el.gateTh.value + ' dB';
+
+el.btnEnter.onclick = () => entrar();
+el.room.addEventListener('keydown', (e) => e.key === 'Enter' && entrar());
+el.nick.addEventListener('keydown', (e) => e.key === 'Enter' && entrar());
+el.senha.addEventListener('keydown', (e) => e.key === 'Enter' && entrar());
+
+// pergunta ao servidor a configuracao antes de qualquer clique: e assim que o
+// campo de senha aparece (so quando a instalacao exige senha)
+let cfgPronta = null;
+
+async function pegarConfig() {
+  if (cfgPronta) return cfgPronta;
+  try {
+    const cfg = await (await fetch('/config')).json();
+    if (cfg.iceServers && cfg.iceServers.length) iceServers = cfg.iceServers;
+    if (cfg.max) MAXP = cfg.max;
+    if (cfg.senha) el.senhaWrap.classList.remove('hidden');
+    cfgPronta = cfg;
+    return cfg;
+  } catch {
+    return null; // usa o STUN padrao
+  }
+}
+
+pegarConfig();
+
+async function entrar() {
+  room = el.room.value.trim().toLowerCase();
+  if (!room) {
+    el.lobbyStatus.textContent = 'Escolha um nome de sala.';
+    return;
+  }
+  myName = el.nick.value.trim().slice(0, 24) || 'convidado';
+  salvarPrefs();
+  el.btnEnter.disabled = true;
+  saiu = false; // pode estar true de uma tentativa com senha errada
+
+  // o clique em "Entrar" e o gesto que libera audio automatico no navegador
+  try {
+    // um so por sessao: tentar de novo (senha errada) nao pode criar outro
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume().catch(() => {});
+  } catch { audioCtx = null; }
+
+  el.lobbyStatus.textContent = 'Pedindo o microfone...';
+  try {
+    rawMic = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+    micStream = montarMic(rawMic);
+    micStream.getAudioTracks()[0].contentHint = 'speech';
+  } catch {
+    rawMic = null;
+    micStream = null;
+    micOn = false;
+  }
+
+  await pegarConfig();
+
+  conectar();
+}
+
+// ---------- sinalizacao ----------
+
+const signal = (obj) => ws && ws.readyState === 1 && ws.send(JSON.stringify(obj));
+
+function conectar() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(proto + '://' + location.host);
+
+  ws.onopen = () => {
+    signal({
+      type: 'join', room, name: myName,
+      senha: el.senha.value,
+      state: { mic: micLive() },
+    });
+    // o tunel do Cloudflare fecha WebSocket parado ha 100 s, e depois que a
+    // chamada negocia a sinalizacao fica muda. Esse ping segura a linha.
+    clearInterval(pingTimer);
+    pingTimer = setInterval(() => signal({ type: 'ping' }), 25000);
+  };
+
+  ws.onclose = () => {
+    clearInterval(pingTimer);
+    if (saiu || !myId) return;
+
+    // O filme NAO passa por aqui: ele e ponto a ponto e continua rodando.
+    // Entao nao tapa a tela - so avisa e tenta voltar sozinho.
+    reconectando = true;
+    el.badge.textContent = '⚠ reconectando...';
+    el.badge.classList.add('bad');
+    const espera = Math.min(1000 * Math.pow(2, tentativas++), 10000);
+    setTimeout(() => { if (!saiu) conectar(); }, espera);
+  };
+
+  ws.onmessage = async (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+
+    switch (msg.type) {
+      case 'full':
+        el.btnEnter.disabled = false;
+        el.lobbyStatus.textContent = 'Essa sala ja esta cheia (' + msg.max + ' pessoas).';
+        pararMic();
+        ws.close();
+        break;
+
+      case 'senha-errada':
+        saiu = true; // nao fica tentando reconectar com a senha errada
+        el.btnEnter.disabled = false;
+        el.lobbyStatus.textContent = 'Senha da casa errada.';
+        el.senhaWrap.classList.remove('hidden');
+        el.senha.value = '';
+        pararMic();
+        break;
+
+      case 'pong':
+        break;
+
+      case 'welcome': {
+        const voltando = !!myId;
+        myId = msg.id;
+        MAXP = msg.max || MAXP;
+        if (voltando) {
+          // o servidor me deu um id novo: as conexoes velhas viraram fantasma
+          for (const id of [...peers.keys()]) removePeer(id);
+          reconectando = false;
+          tentativas = 0;
+          el.badge.classList.remove('bad');
+          sys('Reconectado.');
+        } else {
+          abrirPalco();
+        }
+        for (const info of msg.peers) addPeer(info);
+        anunciar();
+        desenharPessoas();
+        break;
+      }
+
+      case 'peer-joined':
+        sys(msg.name + ' entrou');
+        addPeer({ id: msg.id, name: msg.name, state: msg.state });
+        anunciar();          // conta pro novato quais streams sao quais
+        desenharPessoas();
+        break;
+
+      case 'peer-left':
+        sys(msg.name + ' saiu');
+        removePeer(msg.id);
+        break;
+
+      case 'desc':
+        await onDesc(msg);
+        break;
+
+      case 'ice':
+        await onIce(msg);
+        break;
+
+      case 'ids': {
+        const p = peers.get(msg.from);
+        if (!p) break;
+        p.micStreamId = msg.mic || null;
+        p.screenStreamId = msg.screen || null;
+        resolverStreams(p);
+        break;
+      }
+
+      case 'state': {
+        const p = peers.get(msg.from);
+        if (!p) break;
+        p.mic = !!msg.mic;
+        const parou = p.sharing && !msg.sharing;
+        p.sharing = !!msg.sharing;
+        if (parou && sharerId === p.id) limparPalco(p.name + ' parou a transmissao.');
+        desenharPessoas();
+        atualizarBadge();
+        break;
+      }
+
+      case 'chat':
+        addMsg(msg.name, msg.text);
+        break;
+    }
+  };
+}
+
+// avisa a sala qual stream e voz e qual e filme, e o estado dos botoes
+function anunciar() {
+  signal({
+    type: 'ids',
+    mic: micStream ? micStream.id : null,
+    screen: screenStream ? screenStream.id : null,
+  });
+  signal({ type: 'state', mic: micLive(), sharing: !!screenStream });
+}
+
+function abrirPalco() {
+  el.lobby.classList.add('hidden');
+  el.stage.classList.remove('hidden');
+  el.roomName.textContent = room;
+  el.overlayText.textContent = 'Ninguem esta transmitindo ainda.';
+  aplicarVolumes();
+  atualizarMic();
+  atualizarBadge();
+  iniciarMedidor();
+  if (!micStream) {
+    aviso('O microfone nao foi liberado - voce entrou <b>so ouvindo</b>.<br>' +
+          'Para falar: libere o microfone nas permissoes do site e recarregue a pagina.');
+  }
+}
+
+// ---------- peers (malha: uma conexao com cada pessoa) ----------
+
+function addPeer({ id, name, state }) {
+  if (peers.has(id) || id === myId) return peers.get(id);
+
+  const pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
+  const p = {
+    id, name: name || 'anon', pc,
+    // regra fixa pra desempatar ofertas cruzadas (perfect negotiation)
+    polite: Number(myId) > Number(id),
+    makingOffer: false, ignoreOffer: false,
+    pendingIce: iceOrfaos.get(id) || [], // o que chegou antes de eu existir
+    streams: new Map(), micStreamId: null, screenStreamId: null,
+    mic: !!(state && state.mic), sharing: !!(state && state.sharing),
+    muted: false, speaking: false, holdUntil: 0,
+    audioEl: null, analyser: null, buf: null, nivel: 0,
+    // -1e9: "nunca avisei". Zero nao serve porque performance.now() comeca
+    // do zero e o primeiro aviso ficaria travado pelos dois minutos iniciais.
+    env: [], eco: 0, avisadoEm: -1e9,
+    micSender: null, screenSenders: [], row: null,
+  };
+  peers.set(id, p);
+  iceOrfaos.delete(id);
+
+  pc.onicecandidate = (e) => e.candidate && signal({ type: 'ice', to: id, candidate: e.candidate });
+
+  pc.onnegotiationneeded = async () => {
+    try {
+      p.makingOffer = true;
+      const offer = await pc.createOffer();
+      if (pc.signalingState !== 'stable') return;
+      await setLocal(pc, offer);
+      signal({ type: 'desc', to: id, desc: pc.localDescription });
+    } catch (err) {
+      console.warn('negociacao', err);
+    } finally {
+      p.makingOffer = false;
+    }
+  };
+
+  pc.ontrack = (e) => {
+    const s = e.streams[0];
+    if (!s) return;
+    if (!p.streams.has(s.id)) {
+      p.streams.set(s.id, s);
+      s.addEventListener('removetrack', () => resolverStreams(p));
+      s.addEventListener('addtrack', () => resolverStreams(p));
+    }
+    resolverStreams(p);
+  };
+
+  pc.onconnectionstatechange = () => {
+    const s = pc.connectionState;
+    if (s === 'connected') afinarSenders(p);
+    if (s === 'failed') {
+      try { pc.restartIce(); } catch { /* navegador antigo */ }
+      sys('Conexao com ' + p.name + ' falhou (NAT restritivo). Tentando de novo...');
+    }
+    desenharPessoas();
+  };
+
+  // suas faixas locais entram na conexao nova
+  if (micStream) p.micSender = pc.addTrack(micStream.getAudioTracks()[0], micStream);
+  if (screenStream) addScreenTo(p);
+
+  return p;
+}
+
+function removePeer(id) {
+  const p = peers.get(id);
+  if (!p) return;
+  try { p.pc.close(); } catch { /* ja fechada */ }
+  if (p.audioEl) p.audioEl.remove();
+  peers.delete(id);
+  if (sharerId === id) limparPalco('A transmissao parou.');
+  desenharPessoas();
+  afinarTodos();
+}
+
+function addScreenTo(p) {
+  p.screenSenders = [];
+  const v = screenStream.getVideoTracks()[0];
+  if (v) p.screenSenders.push(p.pc.addTrack(v, screenStream));
+  const a = screenStream.getAudioTracks()[0];
+  if (a) p.screenSenders.push(p.pc.addTrack(a, screenStream));
+  afinarSenders(p);
+}
+
+function removeScreenFrom(p) {
+  for (const s of p.screenSenders) {
+    try { p.pc.removeTrack(s); } catch { /* ja removida */ }
+  }
+  p.screenSenders = [];
+}
+
+// ---------- negociacao ----------
+
+// Candidatos que chegaram antes de o peer existir aqui. Nao da pra contar com
+// a ordem: 'desc' e 'ice' podem passar na frente do aviso de 'peer-joined'.
+const iceOrfaos = new Map();
+
+async function onDesc(msg) {
+  // negociacao de alguem que ainda nao anunciaram: cria a conexao na hora
+  const p = peers.get(msg.from) || addPeer({ id: msg.from, name: msg.name });
+  if (!p) return;
+  const desc = msg.desc;
+  const colisao = desc.type === 'offer' && (p.makingOffer || p.pc.signalingState !== 'stable');
+  p.ignoreOffer = !p.polite && colisao;
+  if (p.ignoreOffer) return;
+
+  try {
+    await p.pc.setRemoteDescription(desc);
+    for (const c of p.pendingIce) await p.pc.addIceCandidate(c).catch(() => {});
+    p.pendingIce = [];
+    if (desc.type === 'offer') {
+      const answer = await p.pc.createAnswer();
+      await setLocal(p.pc, answer);
+      signal({ type: 'desc', to: p.id, desc: p.pc.localDescription });
+    }
+  } catch (err) {
+    console.warn('desc', err);
+  }
+}
+
+async function onIce(msg) {
+  const p = peers.get(msg.from);
+  if (!p) {
+    // guarda pra quando o peer aparecer, com teto pra nao virar lixo eterno
+    if (iceOrfaos.size > 8) return;
+    const fila = iceOrfaos.get(msg.from) || [];
+    if (fila.length < 40) fila.push(msg.candidate);
+    iceOrfaos.set(msg.from, fila);
+    return;
+  }
+  if (!p.pc.remoteDescription) { p.pendingIce.push(msg.candidate); return; }
+  try { await p.pc.addIceCandidate(msg.candidate); }
+  catch (err) { if (!p.ignoreOffer) console.warn('ice', err); }
+}
+
+// O Opus do WebRTC vem mono e ~32 kbps por padrao, afinado pra voz. Para
+// filme isso soa terrivel. Mas voz e filme sao faixas diferentes, entao cada
+// uma leva o seu perfil: o filme ganha estereo e teto alto, a voz fica mono e
+// barata (com DTX, que para de mandar pacote quando o portao fecha).
+const OPUS_FILME = 'stereo=1;sprop-stereo=1;maxaveragebitrate=256000;useinbandfec=1';
+const OPUS_VOZ = 'stereo=0;sprop-stereo=0;maxaveragebitrate=32000;useinbandfec=1;usedtx=1';
+
+function mesclarFmtp(params, extras) {
+  const chaves = extras.split(';').map((kv) => kv.split('=')[0]);
+  const resto = params.split(';').filter((kv) => kv && !chaves.includes(kv.split('=')[0]));
+  return resto.concat(extras.split(';')).join(';');
+}
+
+function afinarOpus(sdp) {
+  const idMic = micStream ? micStream.id : null;
+  return sdp.split(/(?=^m=)/m).map((sec) => {
+    if (!sec.startsWith('m=audio')) return sec;
+    const m = sec.match(/a=rtpmap:(\d+) opus\/48000\/2/);
+    if (!m) return sec;
+    const pt = m[1];
+    // a secao que carrega o meu microfone e a da voz; o resto e filme
+    const extras = idMic && sec.includes('a=msid:' + idMic) ? OPUS_VOZ : OPUS_FILME;
+    const fmtp = new RegExp('a=fmtp:' + pt + ' (.*)');
+    if (fmtp.test(sec)) {
+      return sec.replace(fmtp, (_full, params) => 'a=fmtp:' + pt + ' ' + mesclarFmtp(params, extras));
+    }
+    return sec.replace(
+      'a=rtpmap:' + pt + ' opus/48000/2',
+      'a=rtpmap:' + pt + ' opus/48000/2\r\na=fmtp:' + pt + ' ' + extras
+    );
+  }).join('');
+}
+
+// aplica o munging; se o navegador recusar, cai de volta no SDP original
+async function setLocal(pc, desc) {
+  try {
+    await pc.setLocalDescription({ type: desc.type, sdp: afinarOpus(desc.sdp) });
+  } catch {
+    await pc.setLocalDescription(desc);
+  }
+}
+
+// quanto mais gente, menos banda sobra pra cada copia do video
+function bitrateVideo() {
+  const n = Math.max(1, peers.size);
+  if (n <= 1) return 5000000;
+  if (n === 2) return 3000000;
+  return 1800000;
+}
+
+async function afinarSenders(p) {
+  const ajusta = async (sender, fn) => {
+    if (!sender || !sender.track) return;
+    const prm = sender.getParameters();
+    if (!prm.encodings || !prm.encodings.length) prm.encodings = [{}];
+    fn(prm);
+    await sender.setParameters(prm).catch(() => {});
+  };
+
+  await ajusta(p.micSender, (prm) => { prm.encodings[0].maxBitrate = 40000; });
+
+  for (const s of p.screenSenders) {
+    if (s.track && s.track.kind === 'video') {
+      await ajusta(s, (prm) => {
+        prm.encodings[0].maxBitrate = bitrateVideo();
+        prm.degradationPreference = 'maintain-resolution';
+      });
+    } else {
+      await ajusta(s, (prm) => { prm.encodings[0].maxBitrate = 256000; });
+    }
+  }
+}
+
+function afinarTodos() {
+  for (const p of peers.values()) afinarSenders(p);
+}
+
+// ---------- separar voz de filme ----------
+
+function resolverStreams(p) {
+  for (const [sid, s] of p.streams) {
+    const temVideo = s.getVideoTracks().length > 0;
+    // o anuncio 'ids' manda; sem ele, video = tela, so audio = voz
+    const ehTela = p.screenStreamId ? sid === p.screenStreamId : temVideo;
+    const ehVoz = p.micStreamId ? sid === p.micStreamId : (!ehTela && s.getAudioTracks().length > 0);
+
+    if (ehTela) {
+      if (temVideo) ligarTela(p, s);
+      else if (sharerId === p.id) limparPalco(p.name + ' parou a transmissao.');
+    } else if (ehVoz) {
+      ligarVoz(p, s);
+    }
+  }
+}
+
+function ligarVoz(p, s) {
+  if (p.audioEl && p.audioEl.srcObject === s) return;
+  if (!p.audioEl) {
+    p.audioEl = document.createElement('audio');
+    p.audioEl.autoplay = true;
+    p.audioEl.playsInline = true;
+    el.audios.append(p.audioEl);
+  }
+  p.audioEl.srcObject = s;
+  p.audioEl.play().catch(() => el.unmute.classList.remove('hidden'));
+  aplicarVolumes();
+  medidorPara(p, s);
+}
+
+function medidorFilme(s) {
+  if (!audioCtx || filmeStreamId === s.id || s.getAudioTracks().length === 0) return;
+  try {
+    const src = audioCtx.createMediaStreamSource(s);
+    filmeAn = audioCtx.createAnalyser();
+    filmeAn.fftSize = 512;
+    filmeBuf = new Float32Array(filmeAn.fftSize);
+    src.connect(filmeAn);
+    filmeStreamId = s.id;
+  } catch { filmeAn = null; }
+}
+
+function ligarTela(p, s) {
+  sharerId = p.id;
+  if (el.video.srcObject !== s) {
+    el.video.srcObject = s;
+    tocarVideo();
+  }
+  medidorFilme(s);
+  el.overlay.classList.add('hidden');
+  if (s.getAudioTracks().length === 0) {
+    aviso(esc(p.name) + ' esta transmitindo <b>sem audio</b> - ninguem vai ouvir o filme.<br>' +
+          'Peca pra clicar em <b>Parar</b>, depois <b>Transmitir</b> de novo, ' +
+          'marcando <b>Compartilhar audio da guia</b>.');
+  } else {
+    el.warn.classList.add('hidden');
+  }
+  atualizarBadge();
+}
+
+function limparPalco(texto) {
+  sharerId = null;
+  filmeAn = null;
+  filmeStreamId = null;
+  el.video.srcObject = null;
+  el.video.muted = false;
+  el.overlay.classList.remove('hidden');
+  el.overlayText.textContent = texto || 'Ninguem esta transmitindo.';
+  atualizarBadge();
+}
+
+// navegador bloqueia audio automatico: tenta tocar, senao pede um clique
+async function tocarVideo() {
+  el.video.muted = false;
+  aplicarVolumes();
+  try {
+    await el.video.play();
+    if (el.video.muted) throw new Error('mudo');
+    el.unmute.classList.add('hidden');
+  } catch {
+    el.video.muted = true;
+    await el.video.play().catch(() => {});
+    el.unmute.classList.remove('hidden');
+  }
+}
+
+$('btn-unmute').onclick = async () => {
+  el.video.muted = false;
+  await el.video.play().catch(() => {});
+  for (const p of peers.values()) if (p.audioEl) p.audioEl.play().catch(() => {});
+  if (audioCtx) audioCtx.resume().catch(() => {});
+  aplicarVolumes();
+  el.unmute.classList.add('hidden');
+};
+
+// ---------- transmitir a tela ----------
+
+el.btnShare.onclick = () => (screenStream ? pararTransmissao() : comecarTransmissao());
+
+async function comecarTransmissao() {
+  const outro = [...peers.values()].find((p) => p.sharing);
+  if (outro) {
+    sys(outro.name + ' ja esta transmitindo. Peca pra parar antes.');
+    return;
+  }
+
+  let s;
+  try {
+    s = await navigator.mediaDevices.getDisplayMedia(TELA_CONSTRAINTS);
+  } catch {
+    return; // cancelou a janela do navegador
+  }
+
+  screenStream = s;
+  const a = s.getAudioTracks()[0];
+  if (a) a.contentHint = 'music';
+  const v = s.getVideoTracks()[0];
+  if (v) {
+    v.contentHint = 'detail';
+    v.addEventListener('ended', () => pararTransmissao());
+  }
+
+  for (const p of peers.values()) addScreenTo(p);
+
+  sharerId = 'me';
+  el.video.srcObject = screenStream;
+  el.video.muted = true; // o filme ja toca no seu PC: nao duplica nem realimenta
+  el.overlay.classList.add('hidden');
+  el.btnShare.classList.add('on');
+  el.btnShare.textContent = '⏹ Parar';
+
+  if (!a) {
+    aviso(
+      'Voce esta transmitindo <b>sem audio</b> - ninguem vai ouvir o filme.<br>' +
+      'Clique em <b>Parar</b> e depois <b>Transmitir</b> de novo. Na janela do Chrome:<br>' +
+      '&bull; aba <b>Guia do Chrome</b> &rarr; marque <b>Compartilhar audio da guia</b><br>' +
+      '&bull; ou aba <b>Tela inteira</b> &rarr; marque <b>Compartilhar audio do sistema</b><br>' +
+      'A aba <b>Janela</b> nunca envia audio.'
+    );
+  } else if (v && v.getSettings && v.getSettings().displaySurface === 'monitor') {
+    // audio do sistema = tudo que sai da sua caixa de som, inclusive as vozes
+    // da sala. Isso volta pra todo mundo e e a causa numero 1 do eco.
+    aviso(
+      'Voce escolheu <b>Tela inteira</b> com <b>audio do sistema</b>. Isso captura ' +
+      'tambem as <b>vozes da sala</b> saindo do seu alto-falante e devolve pra todo ' +
+      'mundo - e isso que faz as vozes ecoarem.<br>' +
+      'Solucao: use <b>fone de ouvido</b>, ou pare e compartilhe pela aba ' +
+      '<b>Guia do Chrome</b> marcando <b>Compartilhar audio da guia</b> ' +
+      '(essa envia so o som do filme).'
+    );
+  } else {
+    el.warn.classList.add('hidden');
+  }
+
+  anunciar();
+  desenharPessoas();
+  atualizarBadge();
+}
+
+function pararTransmissao() {
+  if (!screenStream) return;
+  screenStream.getTracks().forEach((t) => t.stop());
+  for (const p of peers.values()) removeScreenFrom(p);
+  screenStream = null;
+  el.btnShare.classList.remove('on');
+  el.btnShare.textContent = '\u{1F5A5} Transmitir';
+  limparPalco('Voce parou a transmissao.');
+  anunciar();
+  desenharPessoas();
+}
+
+// ---------- microfone, surdina, apertar pra falar ----------
+
+function micLive() {
+  return !!micStream && micOn && !deaf && (!pttOn || pttHeld);
+}
+
+function atualizarMic() {
+  const live = micLive();
+  if (micStream) micStream.getAudioTracks().forEach((t) => { t.enabled = live; });
+  el.btnMic.textContent = live ? '\u{1F399}' : '\u{1F507}';
+  el.btnMic.classList.toggle('off', !live);
+  el.btnMic.disabled = !micStream;
+  if (myRow) myRow.classList.toggle('mudo', !live);
+  signal({ type: 'state', mic: live, sharing: !!screenStream });
+}
+
+el.btnMic.onclick = () => { micOn = !micOn; atualizarMic(); desenharPessoas(); };
+
+function alternarSurdina() {
+  deaf = !deaf;
+  if (deaf) { micAntesDoDeaf = micOn; micOn = false; }
+  else { micOn = micAntesDoDeaf; }
+  el.btnDeaf.classList.toggle('off', deaf);
+  el.btnDeaf.textContent = deaf ? '\u{1F507}' : '\u{1F3A7}';
+  atualizarMic();
+  aplicarVolumes();
+  desenharPessoas();
+}
+
+el.btnDeaf.onclick = () => alternarSurdina();
+
+pttOn = el.ptt.checked;
+el.ptt.onchange = () => { pttOn = el.ptt.checked; pttHeld = false; atualizarMic(); salvarPrefs(); };
+
+const digitando = (e) => e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
+
+addEventListener('keydown', (e) => {
+  if (e.key === 'Control' && pttOn && !pttHeld) { pttHeld = true; atualizarMic(); }
+  if (digitando(e) || el.stage.classList.contains('hidden')) return;
+  if (e.key === 'm' || e.key === 'M') { micOn = !micOn; atualizarMic(); desenharPessoas(); }
+  if (e.key === 'd' || e.key === 'D') alternarSurdina();
+});
+
+addEventListener('keyup', (e) => {
+  if (e.key === 'Control' && pttOn && pttHeld) { pttHeld = false; atualizarMic(); }
+});
+
+addEventListener('blur', () => { if (pttHeld) { pttHeld = false; atualizarMic(); } });
+
+function pararMic() {
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  if (rawMic) rawMic.getTracks().forEach((t) => t.stop());
+  micStream = null;
+  rawMic = null;
+  micChain = null;
+}
+
+// ---------- filtro de ruido do microfone ----------
+//
+// O que sai daqui e o que os outros escutam. A cadeia e:
+//
+//   mic cru -> corta grave -> corta agudo -> compressor -> portao -> envio
+//
+// O corte de grave tira ronco de ventilador e batida na mesa; o de agudo tira
+// chiado; o compressor equilibra quem fala longe do mic; o portao fecha o
+// microfone quando voce esta calado - e o portao que mata o eco residual, o
+// teclado e a TV do vizinho, porque nada disso passa do limiar.
+
+function montarMic(raw) {
+  if (!audioCtx) return raw;
+  try {
+    const src = audioCtx.createMediaStreamSource(raw);
+
+    // 1. corta grave: ronco de ventilador, ar condicionado, batida na mesa
+    const hp = audioCtx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 85; hp.Q.value = 0.7;
+
+    // 2. tira o "abafado" da faixa 200-400 Hz, onde a voz embola com o filme
+    const lama = audioCtx.createBiquadFilter();
+    lama.type = 'peaking'; lama.frequency.value = 300; lama.Q.value = 1; lama.gain.value = -3;
+
+    // 3. presenca: e essa faixa que faz a voz ser ENTENDIDA por cima do filme
+    const presenca = audioCtx.createBiquadFilter();
+    presenca.type = 'peaking'; presenca.frequency.value = 2800; presenca.Q.value = 0.9;
+    presenca.gain.value = 4;
+
+    // 4. tira chiado e sibilancia acima da voz
+    const lp = audioCtx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 10000;
+
+    // 5. compressor: quem fala longe do microfone para de sumir
+    const comp = audioCtx.createDynamicsCompressor();
+    comp.threshold.value = -26; comp.knee.value = 24; comp.ratio.value = 4;
+    comp.attack.value = 0.005; comp.release.value = 0.18;
+
+    // 6. o portao (controlado pelo tickGate)
+    const gate = audioCtx.createGain();
+    gate.gain.value = 1;
+
+    // 7. recupera o volume que o compressor tirou
+    const makeup = audioCtx.createGain();
+    makeup.gain.value = 1.6;
+
+    // 8. limitador: makeup + compressor podem estourar; isso segura o teto
+    const lim = audioCtx.createDynamicsCompressor();
+    lim.threshold.value = -3; lim.knee.value = 0; lim.ratio.value = 20;
+    lim.attack.value = 0.001; lim.release.value = 0.05;
+
+    const an = audioCtx.createAnalyser();
+    an.fftSize = 512;
+
+    // voz e mono: destino estereo dobraria a banda a troco de nada
+    const dst = audioCtx.createMediaStreamDestination();
+    dst.channelCount = 1;
+    dst.channelCountMode = 'explicit';
+
+    src.connect(hp); hp.connect(lama); lama.connect(presenca);
+    presenca.connect(lp); lp.connect(comp);
+    comp.connect(an);            // mede depois dos filtros, antes do portao
+    comp.connect(gate); gate.connect(makeup); makeup.connect(lim); lim.connect(dst);
+
+    micChain = {
+      gate, an, buf: new Float32Array(an.fftSize),
+      hold: 0, aberto: true,
+      piso: -60,                 // estimativa do ruido de fundo, em dB
+      nivelDb: -90,
+    };
+    return dst.stream;
+  } catch {
+    micChain = null;
+    return raw; // sem Web Audio: manda o microfone cru, melhor que mudo
+  }
+}
+
+function db(rms) {
+  return 20 * Math.log10(Math.max(rms, 1e-6));
+}
+
+// Quanto som o SEU computador esta tocando agora: as vozes dos outros mais o
+// filme, cada um no volume em que voce os deixou. E a referencia do anti-eco:
+// se o microfone esta captando menos que isso, o que ele capta e a propria
+// caixa de som voltando - nao a sua voz.
+function referenciaDb() {
+  if (deaf) return -120;
+  let lin = 0;
+  const vozes = Number(el.volVoice.value) / 100;
+  for (const p of peers.values()) {
+    if (p.muted) continue;
+    lin = Math.max(lin, p.nivel * vozes);
+  }
+  if (filmeAn) lin = Math.max(lin, nivel(filmeAn, filmeBuf) * el.video.volume);
+  return db(lin);
+}
+
+function tickGate() {
+  if (!micChain) return;
+
+  const agora = performance.now();
+
+  // niveis dos outros primeiro: o medidor e o anti-eco usam os mesmos numeros
+  for (const p of peers.values()) {
+    if (p.analyser) p.nivel = nivel(p.analyser, p.buf);
+  }
+
+  const nivelDb = db(nivel(micChain.an, micChain.buf));
+  micChain.nivelDb = nivelDb;
+
+  // Piso de ruido automatico: desce rapido, sobe devagar. Assim ele encontra
+  // sozinho o barulho da casa e nao acompanha a sua voz.
+  if (nivelDb < micChain.piso) micChain.piso += (nivelDb - micChain.piso) * 0.25;
+  else micChain.piso += (nivelDb - micChain.piso) * 0.0006;
+  micChain.piso = Math.max(-85, Math.min(-25, micChain.piso));
+
+  const margem = Number(el.gateTh.value);
+  const limiar = micChain.piso + margem;
+
+  const ref = referenciaDb();
+  // pra abrir enquanto os outros falam, sua voz tem que estar 6 dB acima do
+  // que sai da sua caixa de som. Quem usa fone nunca esbarra nisso.
+  const passaEco = !el.antieco.checked || nivelDb > ref + 6;
+
+  if (nivelDb > limiar && passaEco) micChain.hold = agora + 300;
+  const aberto = !el.gate.checked || agora < micChain.hold;
+
+  if (aberto !== micChain.aberto) {
+    micChain.aberto = aberto;
+    const g = micChain.gate.gain;
+    const t = audioCtx.currentTime;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    // fechado nao e silencio absoluto: -34 dB soa natural, sem "bombear"
+    g.linearRampToValueAtTime(aberto ? 1 : 0.02, t + (aberto ? 0.015 : 0.18));
+  }
+
+  const pct = Math.max(0, Math.min(100, ((nivelDb + 80) / 80) * 100));
+  el.meterBar.style.width = pct + '%';
+  el.meterBar.parentElement.classList.toggle('fechado', !aberto);
+  el.vPiso.textContent = Math.round(micChain.piso) + ' dB';
+}
+
+function salvarPrefs() {
+  localStorage.setItem('cinema', JSON.stringify({
+    room, nick: myName,
+    gate: el.gate.checked, gateTh: el.gateTh.value, antieco: el.antieco.checked,
+    duck: el.duck.checked, ptt: el.ptt.checked,
+  }));
+}
+
+el.gate.onchange = () => { salvarPrefs(); };
+el.antieco.onchange = () => { salvarPrefs(); };
+el.gateTh.oninput = () => {
+  el.vGate.textContent = el.gateTh.value + ' dB';
+  salvarPrefs();
+};
+
+// ---------- volumes e "quem esta falando" ----------
+
+let volFilmeAlvo = 1;
+
+function aplicarVolumes() {
+  const filme = Number(el.volFilm.value) / 100;
+  const vozes = Number(el.volVoice.value) / 100;
+  el.vFilm.textContent = el.volFilm.value + '%';
+  el.vVoice.textContent = el.volVoice.value + '%';
+
+  const abaixa = el.duck.checked && falandoAgora ? 0.25 : 1;
+  volFilmeAlvo = (deaf ? 0 : filme) * abaixa;
+
+  for (const p of peers.values()) {
+    if (p.audioEl) p.audioEl.volume = deaf || p.muted ? 0 : vozes;
+  }
+}
+
+el.volFilm.oninput = () => aplicarVolumes();
+el.volVoice.oninput = () => aplicarVolumes();
+el.duck.onchange = () => { aplicarVolumes(); salvarPrefs(); };
+
+function medidorPara(p, s) {
+  if (!audioCtx || p.analyser) return;
+  try {
+    const src = audioCtx.createMediaStreamSource(s);
+    p.analyser = audioCtx.createAnalyser();
+    p.analyser.fftSize = 512;
+    p.buf = new Float32Array(p.analyser.fftSize);
+    src.connect(p.analyser); // analyser sem destino: so mede, nao toca
+  } catch { p.analyser = null; }
+}
+
+let meuAnalyser = null;
+let meuBuf = null;
+let meuHold = 0;
+
+function iniciarMedidor() {
+  if (audioCtx && micStream && !meuAnalyser) {
+    try {
+      const src = audioCtx.createMediaStreamSource(micStream);
+      meuAnalyser = audioCtx.createAnalyser();
+      meuAnalyser.fftSize = 512;
+      meuBuf = new Float32Array(meuAnalyser.fftSize);
+      src.connect(meuAnalyser);
+    } catch { meuAnalyser = null; }
+  }
+  setInterval(medir, 100);
+  setInterval(tickGate, 25); // o portao precisa reagir mais rapido que a UI
+}
+
+function nivel(analyser, buf) {
+  analyser.getFloatTimeDomainData(buf);
+  let soma = 0;
+  for (let i = 0; i < buf.length; i++) soma += buf[i] * buf[i];
+  return Math.sqrt(soma / buf.length);
+}
+
+function medir() {
+  const agora = performance.now();
+  let alguem = false;
+
+  for (const p of peers.values()) {
+    if (!p.analyser) continue;
+    if (!deaf && !p.muted && p.nivel > 0.02) p.holdUntil = agora + 350;
+    const falando = agora < p.holdUntil;
+    if (falando !== p.speaking) {
+      p.speaking = falando;
+      if (p.row) p.row.classList.toggle('speaking', falando);
+    }
+    if (falando) alguem = true;
+  }
+
+  if (meuAnalyser) {
+    if (micLive() && nivel(meuAnalyser, meuBuf) > 0.02) meuHold = agora + 350;
+    const eu = agora < meuHold;
+    if (myRow) myRow.classList.toggle('speaking', eu);
+    if (eu) alguem = true;
+  }
+
+  if (alguem !== falandoAgora) { falandoAgora = alguem; aplicarVolumes(); }
+
+  // rampa suave: cortar o volume de uma vez soa pior que abaixar
+  const v = el.video.volume;
+  if (Math.abs(v - volFilmeAlvo) > 0.01) {
+    el.video.volume = Math.max(0, Math.min(1, v + (volFilmeAlvo - v) * 0.25));
+  }
+
+  registrarEnvelopes();
+}
+
+// ---------- quem esta ecoando ----------
+//
+// Nenhum filtro do SEU lado conserta o eco: quem produz e o alto-falante da
+// outra pessoa devolvendo a sua voz pro microfone dela. Da pra descobrir quem
+// e: guardo o desenho do meu volume ao longo do tempo e comparo com o que
+// volta de cada um, atrasado. Se bater forte num atraso fixo, achei o culpado.
+
+const ENV_MAX = 120; // 12 s de historico, uma amostra a cada 100 ms
+const meuEnv = [];
+
+function registrarEnvelopes() {
+  if (!micChain) return;
+  meuEnv.push(micChain.aberto ? micChain.nivelDb : -90);
+  if (meuEnv.length > ENV_MAX) meuEnv.shift();
+  for (const p of peers.values()) {
+    p.env.push(db(p.nivel));
+    if (p.env.length > ENV_MAX) p.env.shift();
+  }
+}
+
+function correlacao(a, b, atraso) {
+  const n = Math.min(a.length, b.length) - atraso;
+  if (n < 40) return 0;
+  let sa = 0, sb = 0;
+  for (let i = 0; i < n; i++) { sa += a[i]; sb += b[i + atraso]; }
+  const ma = sa / n, mb = sb / n;
+  let num = 0, va = 0, vb = 0;
+  for (let i = 0; i < n; i++) {
+    const x = a[i] - ma, y = b[i + atraso] - mb;
+    num += x * y; va += x * x; vb += y * y;
+  }
+  if (va < 1 || vb < 1) return 0;
+  return num / Math.sqrt(va * vb);
+}
+
+function procurarEco() {
+  if (!micChain || meuEnv.length < ENV_MAX) return;
+
+  // so faz sentido comparar se eu realmente falei nesse trecho
+  const falei = meuEnv.filter((v) => v > micChain.piso + 10).length;
+  if (falei < 15) return;
+
+  for (const p of peers.values()) {
+    if (p.env.length < ENV_MAX) continue;
+
+    let melhor = 0;
+    for (let atraso = 1; atraso <= 8; atraso++) { // 100 ms a 800 ms
+      melhor = Math.max(melhor, correlacao(meuEnv, p.env, atraso));
+    }
+
+    if (melhor > 0.62) p.eco = Math.min(6, p.eco + 1);
+    else p.eco = Math.max(0, p.eco - 1);
+
+    // tres deteccoes seguidas antes de acusar alguem, e no maximo uma vez
+    // a cada dois minutos
+    if (p.eco >= 3 && performance.now() - p.avisadoEm > 120000) {
+      p.avisadoEm = performance.now();
+      p.eco = 0;
+      sys(p.name + ' esta devolvendo a sua voz (eco)');
+      aviso(
+        '<b>' + esc(p.name) + '</b> esta ecoando voce: a sua voz sai no ' +
+        'alto-falante dessa pessoa e volta pelo microfone dela.<br>' +
+        'Quem resolve e ela, <b>colocando fone de ouvido</b>. ' +
+        'Mexer nas suas opcoes nao adianta.'
+      );
+    }
+  }
+}
+
+setInterval(procurarEco, 4000);
+
+// Diagnostico: abra o console do navegador (F12) e digite cinemaDiag()
+window.cinemaDiag = () => ({
+  mic: micChain ? {
+    nivelDb: +micChain.nivelDb.toFixed(1),
+    piso: +micChain.piso.toFixed(1),
+    limiar: +(micChain.piso + Number(el.gateTh.value)).toFixed(1),
+    aberto: micChain.aberto,
+    ganho: +micChain.gate.gain.value.toFixed(3),
+  } : 'sem cadeia de audio',
+  referenciaDb: +referenciaDb().toFixed(1),
+  antieco: el.antieco.checked,
+  filtro: el.gate.checked,
+  pessoas: [...peers.values()].map((p) => ({
+    nome: p.name, nivelDb: +db(p.nivel).toFixed(1), eco: p.eco, mutado: p.muted,
+  })),
+});
+
+// ---------- lista de pessoas ----------
+
+function linha(nome, opc) {
+  const div = document.createElement('div');
+  div.className = 'person' + (opc.speaking ? ' speaking' : '') + (opc.mic ? '' : ' mudo');
+
+  const av = document.createElement('div');
+  av.className = 'av';
+  av.textContent = (nome[0] || '?').toUpperCase();
+
+  const nm = document.createElement('span');
+  nm.className = 'nm';
+  nm.textContent = nome + (opc.me ? ' (voce)' : '');
+
+  const tags = document.createElement('span');
+  tags.className = 'tags';
+  tags.textContent = (opc.sharing ? '\u{1F5A5}' : '') + (opc.mic ? '' : ' \u{1F507}');
+
+  div.append(av, nm, tags);
+
+  if (!opc.me) {
+    const b = document.createElement('button');
+    b.className = 'mini' + (opc.mutado ? ' off' : '');
+    b.title = opc.mutado ? 'Ouvir de novo' : 'Silenciar essa pessoa';
+    b.textContent = opc.mutado ? '\u{1F507}' : '\u{1F50A}';
+    b.onclick = opc.onMute;
+    div.append(b);
+  }
+  return div;
+}
+
+function desenharPessoas() {
+  el.people.innerHTML = '';
+
+  myRow = linha(myName, { me: true, mic: micLive(), sharing: !!screenStream });
+  el.people.append(myRow);
+
+  for (const p of peers.values()) {
+    p.row = linha(p.name, {
+      mic: p.mic, sharing: p.sharing, mutado: p.muted, speaking: p.speaking,
+      onMute: () => { p.muted = !p.muted; aplicarVolumes(); desenharPessoas(); },
+    });
+    el.people.append(p.row);
+  }
+
+  el.count.textContent = (peers.size + 1) + '/' + MAXP;
+}
+
+function atualizarBadge() {
+  if (reconectando) return; // o aviso de reconexao manda no cracha
+  if (screenStream) {
+    const temAudio = screenStream.getAudioTracks().length > 0;
+    el.badge.textContent = temAudio ? '\u{1F534} transmitindo com audio' : '\u{1F534} transmitindo SEM audio';
+    el.badge.classList.toggle('bad', !temAudio);
+    return;
+  }
+  if (sharerId) {
+    const s = el.video.srcObject;
+    const temAudio = !!s && s.getAudioTracks().length > 0;
+    el.badge.textContent = !temAudio ? '⚠ filme sem audio'
+      : el.video.muted ? '\u{1F507} clique pra ouvir o filme' : '\u{1F3AC} assistindo';
+    el.badge.classList.toggle('bad', !temAudio);
+    return;
+  }
+  el.badge.textContent = '\u{1F5E3} so voz';
+  el.badge.classList.remove('bad');
+}
+
+setInterval(atualizarBadge, 2000);
+
+// ---------- chat e avisos ----------
+
+// nomes vem de outras pessoas: nunca vao crus pro innerHTML
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+));
+
+function aviso(html) {
+  el.warnText.innerHTML = html;
+  el.warn.classList.remove('hidden');
+}
+
+function addMsg(quem, texto) {
+  const div = document.createElement('div');
+  div.className = 'msg';
+  const w = document.createElement('span');
+  w.className = 'who';
+  w.textContent = quem + ':';
+  const t = document.createElement('span');
+  t.textContent = ' ' + texto;
+  div.append(w, t);
+  el.log.append(div);
+  el.log.scrollTop = el.log.scrollHeight;
+  el.chat.classList.remove('hidden');
+}
+
+function sys(texto) {
+  const div = document.createElement('div');
+  div.className = 'msg sys';
+  div.textContent = texto;
+  el.log.append(div);
+  el.log.scrollTop = el.log.scrollHeight;
+}
+
+el.chatForm.onsubmit = (e) => {
+  e.preventDefault();
+  const texto = el.chatInput.value.trim();
+  if (!texto) return;
+  signal({ type: 'chat', text: texto });
+  addMsg(myName, texto);
+  el.chatInput.value = '';
+};
+
+// ---------- botoes ----------
+
+$('btn-chat').onclick = () => el.chat.classList.toggle('hidden');
+$('btn-people').onclick = () => el.side.classList.toggle('aberta');
+$('warn-close').onclick = () => el.warn.classList.add('hidden');
+$('btn-full').onclick = () =>
+  document.fullscreenElement ? document.exitFullscreen() : el.stage.requestFullscreen();
+
+// em tela cheia some a lista de nomes: fica so o filme
+function marcarTelaCheia() {
+  const cheia = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  el.stage.classList.toggle('cheia', cheia);
+  if (cheia) el.side.classList.remove('aberta');
+}
+document.addEventListener('fullscreenchange', marcarTelaCheia);
+document.addEventListener('webkitfullscreenchange', marcarTelaCheia);
+$('btn-leave').onclick = () => sair();
+el.video.addEventListener('dblclick', () => $('btn-full').click());
+
+function sair() {
+  saiu = true;
+  clearInterval(pingTimer);
+  pararMic();
+  if (screenStream) screenStream.getTracks().forEach((t) => t.stop());
+  for (const p of peers.values()) { try { p.pc.close(); } catch { /* ja fechada */ } }
+  if (ws) ws.close();
+  location.reload();
+}
+
+addEventListener('beforeunload', () => { if (ws) ws.close(); });

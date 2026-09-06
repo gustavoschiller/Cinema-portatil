@@ -1,0 +1,6 @@
+# Node e cloudflared embutidos: 142 MB que nao vao pro repositorio.
+# Eles existem so pra versao portatil (Cinema.bat) rodar sem instalar nada.
+arquivos/bin/
+
+node_modules/
+*.log

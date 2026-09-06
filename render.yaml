@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: cinema
+    runtime: node
+    plan: free
+    rootDir: arquivos
+    buildCommand: npm install --omit=dev --no-audit --no-fund
+    startCommand: node server.js
+    healthCheckPath: /config
+    envVars:
+      # Senha da casa. Sem ela, qualquer pessoa que descubra o endereco entra
+      # numa sala so acertando o nome dela. Gere um valor no painel do Render.
+      - key: SENHA
+        generateValue: true
+      - key: MAX_PEERS
+        value: "4"

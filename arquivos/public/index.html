@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cinema</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="lobby" class="lobby">
+  <div class="card">
+    <h1>🍿 Cinema</h1>
+    <p class="sub">Sala com voz. Todo mundo fala, um transmite, todos assistem.</p>
+
+    <label for="room">Sala</label>
+    <input id="room" placeholder="ex: nossa-sala" autocomplete="off">
+
+    <label for="nick">Seu nome</label>
+    <input id="nick" placeholder="ex: Gustavo" autocomplete="off">
+
+    <div id="senha-wrap" class="hidden">
+      <label for="senha">Senha da casa</label>
+      <input id="senha" type="password" placeholder="a senha combinada" autocomplete="current-password">
+    </div>
+
+    <div class="roles">
+      <button id="btn-enter" class="primary">Entrar na sala</button>
+    </div>
+
+    <p class="hint">
+      Todo mundo digita o <b>mesmo nome de sala</b>. O navegador vai pedir o
+      <b>microfone</b> — permita, senão você entra só ouvindo.
+      Depois, quem for passar o filme clica em <b>Transmitir</b>.
+    </p>
+    <p id="lobby-status" class="status"></p>
+  </div>
+</div>
+
+<div id="stage" class="stage hidden">
+
+  <div class="palco">
+    <video id="video" autoplay playsinline></video>
+
+    <div id="overlay" class="overlay">
+      <div class="spinner"></div>
+      <p id="overlay-text">Ninguém está transmitindo ainda.</p>
+    </div>
+
+    <div id="warn" class="warn hidden">
+      <button id="warn-close" class="warn-close" title="Fechar">✕</button>
+      <p id="warn-text"></p>
+    </div>
+
+    <div id="unmute" class="unmute hidden">
+      <button id="btn-unmute">🔇 Clique para ativar o som</button>
+    </div>
+
+    <div id="chat" class="chat hidden">
+      <div id="log" class="log"></div>
+      <form id="chat-form">
+        <input id="chat-input" placeholder="Escreve aí…" autocomplete="off" maxlength="300">
+        <button type="submit">↩</button>
+      </form>
+    </div>
+  </div>
+
+  <aside id="side" class="side">
+    <div class="side-head">
+      <span class="side-room" id="room-name">sala</span>
+      <span class="side-count" id="count">1/4</span>
+    </div>
+
+    <div id="people" class="people"></div>
+
+    <div class="mixer">
+      <label class="slider">
+        <span>🎬 Filme <b id="v-film">100%</b></span>
+        <input id="vol-film" type="range" min="0" max="100" value="100">
+      </label>
+      <label class="slider">
+        <span>🗣 Vozes <b id="v-voice">100%</b></span>
+        <input id="vol-voice" type="range" min="0" max="100" value="100">
+      </label>
+      <label class="check">
+        <input id="gate" type="checkbox" checked>
+        <span>Filtro de ruído no meu microfone</span>
+      </label>
+      <label class="check">
+        <input id="antieco" type="checkbox" checked>
+        <span>Anti-eco: fecha meu microfone enquanto os outros falam</span>
+      </label>
+      <label class="slider" id="gate-wrap">
+        <span>🎚 Sensibilidade <b id="v-gate">10 dB</b></span>
+        <input id="gate-th" type="range" min="4" max="25" value="10">
+        <div class="meter"><i id="meter-bar"></i></div>
+        <span class="piso">ruído da sua sala <b id="v-piso">—</b></span>
+      </label>
+
+      <label class="check">
+        <input id="duck" type="checkbox" checked>
+        <span>Abaixar o filme quando alguém fala</span>
+      </label>
+      <label class="check">
+        <input id="ptt" type="checkbox">
+        <span>Apertar <b>Ctrl</b> pra falar</span>
+      </label>
+    </div>
+  </aside>
+
+  <div class="bar">
+    <span id="badge" class="badge">🔊 áudio: —</span>
+    <span class="spacer"></span>
+    <button id="btn-mic"   class="ctrl" title="Microfone (M)">🎙</button>
+    <button id="btn-deaf"  class="ctrl" title="Silenciar tudo (D)">🎧</button>
+    <button id="btn-share" class="ctrl wide" title="Transmitir a tela">🖥 Transmitir</button>
+    <button id="btn-chat"  class="ctrl" title="Chat">💬</button>
+    <button id="btn-people" class="ctrl only-mobile" title="Participantes">👥</button>
+    <button id="btn-full"  class="ctrl" title="Tela cheia">⛶</button>
+    <button id="btn-leave" class="ctrl danger" title="Sair">✕</button>
+  </div>
+
+  <div id="audios" class="audios"></div>
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

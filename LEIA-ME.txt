@@ -1,0 +1,266 @@
+================================================================
+  CINEMA - sala com voz: todo mundo fala, um transmite o filme
+================================================================
+
+COMO USAR
+---------
+
+1. De dois cliques em Cinema.bat
+
+   Se o Windows mostrar "O Windows protegeu o computador",
+   clique em "Mais informacoes" > "Executar assim mesmo".
+   Isso acontece porque o arquivo veio da internet.
+
+2. Abre um painel com dois enderecos:
+
+   - MANDE ESTE LINK PRA GALERA -> ja vem copiado, so colar
+   - VOCE ABRE AQUI             -> abre sozinho no seu navegador
+
+3. Todo mundo digita o MESMO nome de sala e clica "Entrar".
+   Escolha um nome dificil: quem souber o nome entra.
+
+4. O navegador vai pedir o MICROFONE. Permita.
+   Quem negar entra "so ouvindo" - escuta os outros, mas
+   ninguem escuta essa pessoa.
+
+5. Quem for passar o filme clica em "Transmitir".
+   Os outros nao precisam fazer nada: a tela aparece sozinha.
+
+6. Para encerrar: botao "Encerrar tudo" ou feche a janela.
+
+Cabem 4 pessoas por sala.
+
+
+A SALA POR DENTRO
+-----------------
+
+  Lista da direita   quem esta na sala. A bolinha fica verde
+                     em volta de quem esta falando. O 🖥 marca
+                     quem transmite. O botao de alto-falante
+                     silencia so aquela pessoa, so pra voce.
+
+  Filme / Vozes      dois volumes separados. Da pra deixar o
+                     filme baixo e as vozes altas.
+
+  "Filtro de ruido no meu microfone"
+                     ligado por padrao. Sua voz passa por:
+                     corte de grave (ronco, ventilador), corte
+                     da faixa embolada em 300 Hz, realce de
+                     presenca em 2,8 kHz (e o que faz a voz ser
+                     ENTENDIDA por cima do filme), corte de
+                     chiado, compressor (quem fala longe do mic
+                     para de sumir), portao de ruido e
+                     limitador. A barrinha mostra o seu nivel:
+                     verde = esta indo pros outros, cinza =
+                     fechado.
+
+  "Anti-eco"         ligado por padrao. Fecha o seu microfone
+                     enquanto o som que o SEU computador esta
+                     tocando e mais alto do que a sua voz. E
+                     isso que impede a caixa de som de devolver
+                     a voz dos outros. Nao atrapalha quem fala
+                     de verdade: sua voz no seu microfone e
+                     sempre mais alta que a caixa. Desligue so
+                     se voce usa fone e quer conversar por cima
+                     dos outros.
+
+  "Sensibilidade"    quantos dB acima do barulho da sua casa a
+                     sua voz precisa estar pra abrir o
+                     microfone. Padrao 10 dB. O app mede o
+                     ruido sozinho e mostra embaixo ("ruido da
+                     sua sala"), entao voce nao precisa
+                     calibrar nada. Se comerem o comeco das
+                     suas palavras, baixe pra 6. Se vazar
+                     barulho, suba pra 15.
+
+  "Abaixar o filme quando alguem fala"
+                     ligado por padrao. O filme cai pra 25%
+                     enquanto alguem fala e volta sozinho.
+
+  "Apertar Ctrl pra falar"
+                     desligado por padrao. Ligue se o seu
+                     microfone pega barulho da casa.
+
+  Atalhos            M liga/desliga o microfone.
+                     D silencia tudo (e o seu microfone junto).
+                     Duplo clique no video = tela cheia.
+
+  Tela cheia         some a lista de nomes e a barra de baixo:
+                     fica so o filme. Mexa o mouse pra barra
+                     voltar. ESC sai.
+
+
+O SOM DO FILME (a parte que todo mundo erra)
+--------------------------------------------
+
+Ao clicar em Transmitir, o Chrome mostra tres abas:
+
+  "Guia do Chrome"  -> escolha a guia do filme e marque
+                       "Compartilhar audio da guia".   MELHOR OPCAO
+
+  "Tela inteira"    -> marque "Compartilhar audio do sistema".
+                       Funciona com qualquer player.
+
+  "Janela"          -> NUNCA envia audio. Nao use.
+
+Se voce esquecer de marcar o audio, o app avisa em vermelho
+na hora, pra voce e pra todo mundo na sala. Clique em "Parar"
+e "Transmitir" de novo, marcando a opcao certa.
+
+
+AS VOZES ESTAO ECOANDO / SE REPETINDO
+-------------------------------------
+
+Quase sempre e UMA destas duas causas. Nao adianta mexer no
+filtro de ruido antes de resolver a certa:
+
+1. QUEM TRANSMITE ESCOLHEU "TELA INTEIRA" + "AUDIO DO SISTEMA"
+   e esta ouvindo pela caixa de som.
+
+   Audio do sistema captura TUDO que sai do alto-falante -
+   inclusive as vozes das outras pessoas. Esse pacote volta
+   pra sala inteira. Todo mundo se ouve de novo, com atraso.
+
+   O app avisa em vermelho quando voce escolhe essa opcao.
+
+   Resolve: quem transmite poe FONE DE OUVIDO, ou compartilha
+   pela aba "Guia do Chrome" com "Compartilhar audio da guia"
+   (essa envia so o som do filme, nunca as vozes).
+
+2. ALGUEM ESTA NO ALTO-FALANTE e o microfone dele pega a voz
+   dos outros de volta.
+
+   O navegador ja entra com cancelamento de eco ligado e o
+   filtro de ruido fecha o microfone nas pausas, o que reduz
+   bastante. Mas nenhum software resolve 100%.
+
+   Resolve: fone de ouvido. Se so uma pessoa esta ecoando, e
+   ela que precisa do fone - de nada mexer nas suas opcoes.
+
+O APP DIZ QUEM ESTA ECOANDO
+---------------------------
+
+Voce nao precisa adivinhar. O app compara o desenho da sua voz
+com o que volta de cada pessoa, atrasado. Se bater, ele acusa
+em vermelho: "Fulano esta ecoando voce".
+
+Quem tem que resolver e a pessoa acusada, colocando fone. Nao
+adianta ela mexer no filtro nem voce mexer no seu - o eco
+nasce no alto-falante dela.
+
+O "Anti-eco" ligado (padrao) ja impede a maior parte disso
+automaticamente: o microfone de quem esta no alto-falante fica
+fechado enquanto os outros falam. Se o eco continua mesmo
+assim, e o caso 1 la de cima - audio do sistema - e so o fone
+ou a partilha por guia resolvem.
+
+Ultimo recurso, se ninguem tem fone: ligue "Apertar Ctrl pra
+falar" e suba a "Sensibilidade" pra 15-20 dB. Fica mais chato
+de conversar, mas o eco some.
+
+
+REQUISITOS
+----------
+
+- Windows
+- Chrome ou Edge para QUEM TRANSMITE (Firefox e Safari nao
+  capturam audio da tela). Para so assistir e falar, qualquer
+  navegador moderno serve.
+- Internet. Nada mais: o Node.js e o cloudflared ja vem juntos
+  nesta pasta, nada e instalado no seu computador.
+
+
+SE O LINK NAO ABRIR NO SEU PC
+-----------------------------
+
+Sem problema: voce nao precisa dele. Use o endereco
+http://localhost:3000 que o painel abre pra voce. O link
+publico e so pra outra pessoa.
+
+(Causa: o DNS do seu roteador as vezes guarda por alguns
+minutos que o endereco "nao existe".)
+
+
+A SALA CAI DEPOIS DE UM TEMPO
+-----------------------------
+
+O link do Cloudflare NAO carrega o filme. Ele leva so a pagina
+e os recadinhos de conexao - alguns KB. Filme, som e vozes vao
+direto de um PC pro outro. Entao nao existe "estourar a banda"
+do Cloudflare aqui.
+
+O que acontecia: o Cloudflare fecha conexao parada ha 100
+segundos, e depois que a chamada se acerta esses recadinhos
+param. Agora o app manda um sinal de vida a cada 25 segundos
+dos dois lados, e se mesmo assim cair ele volta sozinho - o
+filme nem para, porque nao passa por la. Aparece so um aviso
+vermelho "reconectando..." no canto.
+
+O tunel gratuito tambem morre sozinho de vez em quando. O
+painel abre um novo na hora, MAS O ENDERECO MUDA: ele copia o
+link novo pra area de transferencia e escreve "LINK NOVO" no
+log. Nesse caso e preciso mandar o link de novo pra galera.
+
+
+SE NAO CONECTAR
+---------------
+
+Se aparecer "Conexao com Fulano falhou (NAT restritivo)", a
+conexao direta entre voces dois nao passou - comum em internet
+movel. Nesse caso e preciso um servidor TURN. Veja o README.md
+do projeto.
+
+Com 4 pessoas, quem transmite envia 3 copias do video ao mesmo
+tempo. Se a imagem travar, o problema quase sempre e o UPLOAD
+de quem transmite. O app ja reduz a qualidade sozinho conforme
+entra gente, mas internet fraca com 4 pessoas vai sofrer.
+
+
+PRIVACIDADE
+-----------
+
+O video, o audio do filme e as vozes vao DIRETO de um
+computador para o outro, criptografados de ponta a ponta
+(WebRTC). O servidor que roda nesta pasta so apresenta os
+computadores uns aos outros - ele nao ve, nao grava e nao
+retransmite nada. O link publico existe so para que os
+navegadores dos outros alcancem o seu.
+
+O link muda a cada vez que voce abre o programa.
+
+
+CANSOU DE DEIXAR O PC LIGADO?
+-----------------------------
+
+Da pra hospedar o servidor de graca e ter um endereco fixo,
+que nunca muda e nao depende do seu computador. O filme
+continua indo direto de um PC pro outro - o servidor
+hospedado so apresenta as pessoas, igual ao daqui.
+
+Passo a passo em HOSPEDAR.md.
+
+Um aviso: com endereco fixo e publico, o nome da sala vira o
+unico segredo. Por isso o servidor aceita uma SENHA DA CASA.
+Quando ela esta ligada, aparece um campo a mais na tela de
+entrada. Aqui em casa ela fica desligada e nada muda.
+
+
+O QUE VEM NA PASTA
+------------------
+
+  Cinema.bat            o programa - de dois cliques aqui
+  arquivos\             o app
+  arquivos\bin\         Node.js e cloudflared (nao instalam nada)
+  arquivos\backup-1a1\  a versao antiga, so 2 pessoas, sem voz
+  HOSPEDAR.md           como por num endereco fixo, de graca
+  render.yaml           receita de deploy (usada la)
+
+
+LICENCAS
+--------
+
+Node.js - MIT (c) OpenJS Foundation e colaboradores
+cloudflared - Apache License 2.0 (c) Cloudflare, Inc.
+ws - MIT (c) Einar Otto Stangvik e colaboradores
+
+Textos completos em arquivos\bin\LICENCAS\.

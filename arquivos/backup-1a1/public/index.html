@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cinema</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="lobby" class="lobby">
+  <div class="card">
+    <h1>🍿 Cinema</h1>
+    <p class="sub">Transmita sua tela com áudio, ponto a ponto.</p>
+
+    <label>Sala</label>
+    <input id="room" placeholder="ex: nossa-sala" autocomplete="off">
+
+    <label>Seu nome</label>
+    <input id="nick" placeholder="ex: Gustavo" autocomplete="off">
+
+    <div class="roles">
+      <button id="btn-host" class="primary">Transmitir minha tela</button>
+      <button id="btn-guest">Só assistir</button>
+    </div>
+
+    <p class="hint">
+      Quem transmite: use <b>Chrome</b> ou <b>Edge</b>, escolha <b>"Guia do Chrome"</b>
+      e marque <b>"Compartilhar áudio da guia"</b> pra ela ouvir o filme.
+    </p>
+    <p id="lobby-status" class="status"></p>
+  </div>
+</div>
+
+<div id="stage" class="stage hidden">
+  <video id="video" autoplay playsinline></video>
+
+  <div class="topbar">
+    <span id="badge" class="badge">—</span>
+    <span id="peers" class="badge dim">sozinho na sala</span>
+    <span id="audio-badge" class="badge dim">áudio: —</span>
+    <span class="spacer"></span>
+    <button id="btn-source" class="icon hidden" title="Trocar fonte / corrigir áudio">🖥</button>
+    <button id="btn-chat" class="icon" title="Chat">💬</button>
+    <button id="btn-full" class="icon" title="Tela cheia">⛶</button>
+    <button id="btn-leave" class="icon danger" title="Sair">✕</button>
+  </div>
+
+  <div id="overlay" class="overlay">
+    <div class="spinner"></div>
+    <p id="overlay-text">Esperando a transmissão…</p>
+  </div>
+
+  <div id="warn" class="warn hidden">
+    <button id="warn-close" class="warn-close" title="Fechar">✕</button>
+    <p id="warn-text"></p>
+  </div>
+
+  <div id="chat" class="chat hidden">
+    <div id="log" class="log"></div>
+    <form id="chat-form">
+      <input id="chat-input" placeholder="Escreve aí…" autocomplete="off" maxlength="300">
+      <button type="submit">↩</button>
+    </form>
+  </div>
+
+  <div id="unmute" class="unmute hidden">
+    <button id="btn-unmute">🔇 Clique para ativar o som</button>
+  </div>
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>
