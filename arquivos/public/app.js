@@ -281,6 +281,8 @@ function conectar() {
         const p = peers.get(msg.from);
         if (!p) break;
         p.mic = !!msg.mic;
+        p.falando = !!msg.falando;   // referencia do anti-eco, ver tickGate
+        if (typeof msg.nivel === 'number') p.nivelReportado = msg.nivel;
         const parou = p.sharing && !msg.sharing;
         p.sharing = !!msg.sharing;
         if (parou && sharerId === p.id) limparPalco(p.name + ' parou a transmissao.');
@@ -335,6 +337,7 @@ function addPeer({ id, name, state }) {
     pendingIce: iceOrfaos.get(id) || [], // o que chegou antes de eu existir
     streams: new Map(), micStreamId: null, screenStreamId: null,
     mic: !!(state && state.mic), sharing: !!(state && state.sharing),
+    falando: false, nivelReportado: -120,
     muted: false, speaking: false, holdUntil: 0,
     audioEl: null, analyser: null, buf: null, nivel: 0,
     // -1e9: "nunca avisei". Zero nao serve porque performance.now() comeca
@@ -347,18 +350,12 @@ function addPeer({ id, name, state }) {
 
   pc.onicecandidate = (e) => e.candidate && signal({ type: 'ice', to: id, candidate: e.candidate });
 
-  pc.onnegotiationneeded = async () => {
-    try {
-      p.makingOffer = true;
-      const offer = await pc.createOffer();
-      if (pc.signalingState !== 'stable') return;
-      await setLocal(pc, offer);
-      signal({ type: 'desc', to: id, desc: pc.localDescription });
-    } catch (err) {
-      console.warn('negociacao', err);
-    } finally {
-      p.makingOffer = false;
-    }
+  pc.onnegotiationneeded = () => { p.querOferta = true; oferecer(p); };
+
+  // Quando a conexao volta pra 'stable', qualquer negociacao que ficou
+  // pendente sai agora. Sem isso ela se perde pra sempre.
+  pc.onsignalingstatechange = () => {
+    if (pc.signalingState === 'stable' && p.querOferta) oferecer(p);
   };
 
   pc.ontrack = (e) => {
@@ -376,8 +373,22 @@ function addPeer({ id, name, state }) {
     const s = pc.connectionState;
     if (s === 'connected') afinarSenders(p);
     if (s === 'failed') {
+      p.falhas = (p.falhas || 0) + 1;
       try { pc.restartIce(); } catch { /* navegador antigo */ }
-      sys('Conexao com ' + p.name + ' falhou (NAT restritivo). Tentando de novo...');
+      sys('Conexao com ' + p.name + ' falhou. Tentando de novo (' + p.falhas + ')');
+
+      // A segunda falha nao e mais azar de rede: e a conexao direta que nao
+      // passa mesmo. Isso ficava escondido no chat, que comeca fechado.
+      if (p.falhas >= 2) {
+        aviso(
+          'Nao consegui abrir conexao direta com <b>' + esc(p.name) + '</b>.<br>' +
+          'O servidor so apresenta voces dois; o video e a voz tentam ir ' +
+          'direto de um PC pro outro, e esse caminho nao passou - tipico de ' +
+          'internet movel (4G) ou rede corporativa.<br>' +
+          'Sem um servidor <b>TURN</b> configurado, nao ha o que fazer do lado ' +
+          'de voces. Testem primeiro os dois no Wi-Fi de casa.'
+        );
+      }
     }
     desenharPessoas();
   };
@@ -421,6 +432,34 @@ function removeScreenFrom(p) {
 // Candidatos que chegaram antes de o peer existir aqui. Nao da pra contar com
 // a ordem: 'desc' e 'ice' podem passar na frente do aviso de 'peer-joined'.
 const iceOrfaos = new Map();
+
+// 'negotiationneeded' avisa UMA vez por mudanca. Se nesse instante a conexao
+// nao estiver em 'stable' (ofertas que se cruzaram - comum quando o servidor
+// de sinalizacao esta longe e a ida-e-volta passa de 100 ms), nao da pra
+// simplesmente desistir: o aviso nao volta, e a faixa nova - a tela
+// compartilhada, por exemplo - nunca chega do outro lado. Entao o pedido fica
+// guardado em querOferta e sai quando a conexao permitir.
+async function oferecer(p) {
+  if (!p.querOferta || p.pc.signalingState !== 'stable') return;
+  p.querOferta = false;
+  try {
+    p.makingOffer = true;
+    const offer = await p.pc.createOffer();
+    if (p.pc.signalingState !== 'stable') { p.querOferta = true; return; }
+    await setLocal(p.pc, offer);
+    signal({ type: 'desc', to: p.id, desc: p.pc.localDescription });
+  } catch (err) {
+    p.querOferta = true;
+    console.warn('negociacao', err);
+  } finally {
+    p.makingOffer = false;
+  }
+}
+
+// rede de seguranca, caso nenhum evento de mudanca de estado apareca
+setInterval(() => {
+  for (const p of peers.values()) if (p.querOferta) oferecer(p);
+}, 3000);
 
 async function onDesc(msg) {
   // negociacao de alguem que ainda nao anunciaram: cria a conexao na hora
@@ -723,7 +762,12 @@ function atualizarMic() {
   el.btnMic.classList.toggle('off', !live);
   el.btnMic.disabled = !micStream;
   if (myRow) myRow.classList.toggle('mudo', !live);
-  signal({ type: 'state', mic: live, sharing: !!screenStream });
+  const falando = live && !!(micChain && micChain.aberto);
+  ultimoFalando = falando;
+  signal({
+    type: 'state', mic: live, sharing: !!screenStream,
+    falando, nivel: Math.round(micChain ? micChain.nivelDb : -120),
+  });
 }
 
 el.btnMic.onclick = () => { micOn = !micOn; atualizarMic(); desenharPessoas(); };
@@ -835,6 +879,7 @@ function montarMic(raw) {
       gate, an, buf: new Float32Array(an.fftSize),
       hold: 0, aberto: true,
       piso: -60,                 // estimativa do ruido de fundo, em dB
+      eco: -60,                  // quanto do som dos outros volta pelo mic
       nivelDb: -90,
     };
     return dst.stream;
@@ -864,6 +909,41 @@ function referenciaDb() {
   return db(lin);
 }
 
+// No celular, medir o audio RECEBIDO pelo Web Audio quase sempre devolve
+// silencio - a referenciaDb acima fica cega e o anti-eco nunca fecha o
+// microfone. A saida e nao depender de medir: cada um ja sabe o proprio nivel
+// e avisa por mensagem. O numero que ele manda e o mesmo que o analisador
+// mediria do outro lado, porque e a mesma faixa de audio.
+function referenciaAvisadaDb() {
+  if (deaf) return -120;
+  const vozes = Number(el.volVoice.value) / 100;
+  const ajuste = 20 * Math.log10(Math.max(vozes, 0.0001)); // volume que voce escolheu
+  let melhor = -120;
+  for (const p of peers.values()) {
+    if (p.muted || !p.falando) continue;
+    melhor = Math.max(melhor, p.nivelReportado + ajuste);
+  }
+  return melhor;
+}
+
+let ultimoFalando = null;
+let ultimoNivelAvisado = -120;
+let ultimoAnuncioVoz = 0;
+
+function anunciarVoz(falando, nivelDb) {
+  const agora = performance.now();
+  const mudouMuito = Math.abs(nivelDb - ultimoNivelAvisado) > 3;
+  if (falando === ultimoFalando && !mudouMuito) return;
+  if (agora - ultimoAnuncioVoz < 180) return; // teto de ~5 avisos por segundo
+  ultimoFalando = falando;
+  ultimoNivelAvisado = nivelDb;
+  ultimoAnuncioVoz = agora;
+  signal({
+    type: 'state', mic: micLive(), sharing: !!screenStream,
+    falando, nivel: Math.round(nivelDb),
+  });
+}
+
 function tickGate() {
   if (!micChain) return;
 
@@ -884,15 +964,37 @@ function tickGate() {
   micChain.piso = Math.max(-85, Math.min(-25, micChain.piso));
 
   const margem = Number(el.gateTh.value);
-  const limiar = micChain.piso + margem;
 
-  const ref = referenciaDb();
-  // pra abrir enquanto os outros falam, sua voz tem que estar 6 dB acima do
-  // que sai da sua caixa de som. Quem usa fone nunca esbarra nisso.
-  const passaEco = !el.antieco.checked || nivelDb > ref + 6;
+  // Enquanto outra pessoa fala, exijo 12 dB a mais da sua voz. E o que impede
+  // o alto-falante do celular de devolver a voz dela. Funciona mesmo quando a
+  // medicao do audio recebido nao funciona - caso do navegador do celular.
+  const limiar = micChain.piso + margem;
+  micChain.limiar = limiar;
+
+  // Alguem esta falando agora? Medido aqui (desktop) ou avisado por mensagem
+  // (unico jeito que funciona no navegador do celular).
+  const outroFalando = referenciaDb() > -70 || referenciaAvisadaDb() > -70;
+
+  // Quanto do som dos outros volta pelo SEU microfone nao da pra adivinhar:
+  // depende de fone, caixa, volume, distancia - varia 40 dB entre aparelhos.
+  // Entao a gente mede. Enquanto o outro fala, o que o seu microfone capta E
+  // o eco; e so aprender esse nivel. Sobe rapido, esquece devagar, e tem teto
+  // pra voce falar junto com alguem nao envenenar a conta.
+  if (outroFalando) {
+    const passo = nivelDb > micChain.eco ? 0.03 : 0.005;
+    micChain.eco += (nivelDb - micChain.eco) * passo;
+  } else {
+    micChain.eco += (micChain.piso - micChain.eco) * 0.002;
+  }
+  micChain.eco = Math.max(micChain.piso, Math.min(micChain.piso + 45, micChain.eco));
+
+  // sem ninguem falando nao existe eco pra barrar
+  const passaEco = !el.antieco.checked || !outroFalando || nivelDb > micChain.eco + 8;
 
   if (nivelDb > limiar && passaEco) micChain.hold = agora + 300;
   const aberto = !el.gate.checked || agora < micChain.hold;
+
+  anunciarVoz(aberto && micLive(), nivelDb);
 
   if (aberto !== micChain.aberto) {
     micChain.aberto = aberto;
@@ -1087,22 +1189,70 @@ function procurarEco() {
 
 setInterval(procurarEco, 4000);
 
-// Diagnostico: abra o console do navegador (F12) e digite cinemaDiag()
-window.cinemaDiag = () => ({
-  mic: micChain ? {
-    nivelDb: +micChain.nivelDb.toFixed(1),
-    piso: +micChain.piso.toFixed(1),
-    limiar: +(micChain.piso + Number(el.gateTh.value)).toFixed(1),
-    aberto: micChain.aberto,
-    ganho: +micChain.gate.gain.value.toFixed(3),
-  } : 'sem cadeia de audio',
-  referenciaDb: +referenciaDb().toFixed(1),
-  antieco: el.antieco.checked,
-  filtro: el.gate.checked,
-  pessoas: [...peers.values()].map((p) => ({
-    nome: p.name, nivelDb: +db(p.nivel).toFixed(1), eco: p.eco, mutado: p.muted,
-  })),
-});
+// Diagnostico: abra o console do navegador (F12) e digite  await cinemaDiag()
+window.cinemaDiag = async () => {
+  const pessoas = [];
+
+  for (const p of peers.values()) {
+    const info = {
+      nome: p.name,
+      conexao: p.pc.connectionState,     // 'connected' e o unico que presta
+      ice: p.pc.iceConnectionState,
+      nivelDb: +db(p.nivel).toFixed(1),
+      falando: p.falando,                // avisado por ele, nao medido aqui
+      nivelAvisadoDb: p.nivelReportado,
+      eco: p.eco,
+      mutado: p.muted,
+    };
+
+    try {
+      const st = await p.pc.getStats();
+      const bytes = { recebeVoz: 0, recebeVideo: 0, mandaVoz: 0, mandaVideo: 0 };
+      let par = null;
+
+      st.forEach((r) => {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') bytes.recebeVoz = r.bytesReceived;
+        if (r.type === 'inbound-rtp' && r.kind === 'video') bytes.recebeVideo = r.bytesReceived;
+        if (r.type === 'outbound-rtp' && r.kind === 'audio') bytes.mandaVoz = r.bytesSent;
+        if (r.type === 'outbound-rtp' && r.kind === 'video') bytes.mandaVideo = r.bytesSent;
+        if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') par = r;
+      });
+
+      info.bytes = bytes;
+      if (par) {
+        const local = st.get(par.localCandidateId);
+        const remoto = st.get(par.remoteCandidateId);
+        // host = mesma rede, srflx = passou pelo STUN, relay = precisou de TURN
+        info.caminho = (local ? local.candidateType : '?') + ' -> ' + (remoto ? remoto.candidateType : '?');
+      } else {
+        info.caminho = 'nenhum caminho fechou (ICE nao passou)';
+      }
+    } catch { info.bytes = 'sem estatisticas'; }
+
+    pessoas.push(info);
+  }
+
+  return {
+    sala: room,
+    microfoneLiberado: !!micStream,
+    euTransmitindo: !!screenStream,
+    recebendoTelaDe: sharerId,
+    servidor: ws && ws.readyState === 1 ? 'conectado' : 'CAIDO',
+    mic: micChain ? {
+      nivelDb: +micChain.nivelDb.toFixed(1),
+      piso: +micChain.piso.toFixed(1),
+      limiar: +(micChain.limiar ?? micChain.piso + Number(el.gateTh.value)).toFixed(1),
+      aberto: micChain.aberto,
+      ecoAprendido: +micChain.eco.toFixed(1),
+      ganho: +micChain.gate.gain.value.toFixed(3),
+    } : 'sem cadeia de audio (microfone negado?)',
+    referenciaDb: +referenciaDb().toFixed(1),
+    referenciaAvisadaDb: +referenciaAvisadaDb().toFixed(1),
+    antieco: el.antieco.checked,
+    filtro: el.gate.checked,
+    pessoas,
+  };
+};
 
 // ---------- lista de pessoas ----------
 

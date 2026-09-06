@@ -65,15 +65,17 @@ A SALA POR DENTRO
                      verde = esta indo pros outros, cinza =
                      fechado.
 
-  "Anti-eco"         ligado por padrao. Fecha o seu microfone
-                     enquanto o som que o SEU computador esta
-                     tocando e mais alto do que a sua voz. E
-                     isso que impede a caixa de som de devolver
-                     a voz dos outros. Nao atrapalha quem fala
-                     de verdade: sua voz no seu microfone e
-                     sempre mais alta que a caixa. Desligue so
-                     se voce usa fone e quer conversar por cima
-                     dos outros.
+  "Anti-eco"         ligado por padrao. Enquanto outra pessoa
+                     fala, o app mede quanto do som DELA volta
+                     pelo seu microfone - isso e o eco - e
+                     fecha o microfone abaixo desse nivel.
+                     Ele aprende sozinho, por aparelho: fone
+                     de ouvido vaza quase nada, celular no
+                     alto-falante vaza muito, e a conta se
+                     ajusta a cada caso. Falar de verdade
+                     passa por cima e continua funcionando.
+                     Desligue so se voce usa fone e quer
+                     conversar por cima dos outros.
 
   "Sensibilidade"    quantos dB acima do barulho da sua casa a
                      sua voz precisa estar pra abrir o
