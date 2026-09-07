@@ -503,7 +503,11 @@ async function onIce(msg) {
 // filme isso soa terrivel. Mas voz e filme sao faixas diferentes, entao cada
 // uma leva o seu perfil: o filme ganha estereo e teto alto, a voz fica mono e
 // barata (com DTX, que para de mandar pacote quando o portao fecha).
-const OPUS_FILME = 'stereo=1;sprop-stereo=1;maxaveragebitrate=256000;useinbandfec=1';
+// 256 kbps era o teto anterior. Numa malha (cada um manda pra cada um) esse
+// exagero e o primeiro a sofrer quando a subida entope: o Opus nao baixa a
+// taxa do audio sozinho como o video baixa - ele so perde pacote, e o som
+// some por meio segundo. 128 kbps estereo ja e transparente pra filme.
+const OPUS_FILME = 'stereo=1;sprop-stereo=1;maxaveragebitrate=128000;useinbandfec=1';
 const OPUS_VOZ = 'stereo=0;sprop-stereo=0;maxaveragebitrate=32000;useinbandfec=1;usedtx=1';
 
 function mesclarFmtp(params, extras) {
@@ -541,12 +545,21 @@ async function setLocal(pc, desc) {
   }
 }
 
-// quanto mais gente, menos banda sobra pra cada copia do video
+// Aqui nao existe servidor de midia: cada um manda uma copia inteira do video
+// pra cada outra pessoa. Com 3 convidados, um teto de 1,8 Mbps por copia vira
+// 5,4 Mbps de subida - mais do que quase toda internet de casa aguenta.
+//
+// Pior: cada RTCPeerConnection estima a banda por conta propria e nenhuma sabe
+// das outras. Tres delas medem o MESMO cano e cada uma se acha dona dele. Da
+// fila no roteador, e fila vira perda em rajada - o som do filme sumindo de
+// tempos em tempos.
+//
+// Entao o teto e de subida TOTAL, dividido entre as copias.
+const TETO_SUBIDA = 3000000; // bits/s de video, somando todas as copias
+
 function bitrateVideo() {
   const n = Math.max(1, peers.size);
-  if (n <= 1) return 5000000;
-  if (n === 2) return 3000000;
-  return 1800000;
+  return Math.max(600000, Math.round(TETO_SUBIDA / n));
 }
 
 async function afinarSenders(p) {
@@ -558,16 +571,32 @@ async function afinarSenders(p) {
     await sender.setParameters(prm).catch(() => {});
   };
 
-  await ajusta(p.micSender, (prm) => { prm.encodings[0].maxBitrate = 40000; });
+  // networkPriority decide quem perde primeiro quando a banda acaba. Sem isso
+  // o video - que come 20x mais - disputa de igual pra igual com o audio e
+  // ganha, porque e ele que enche a fila.
+  await ajusta(p.micSender, (prm) => {
+    prm.encodings[0].maxBitrate = 40000;
+    prm.encodings[0].networkPriority = 'high';
+    prm.encodings[0].priority = 'high';
+  });
 
   for (const s of p.screenSenders) {
     if (s.track && s.track.kind === 'video') {
       await ajusta(s, (prm) => {
         prm.encodings[0].maxBitrate = bitrateVideo();
-        prm.degradationPreference = 'maintain-resolution';
+        prm.encodings[0].networkPriority = 'low';
+        prm.encodings[0].priority = 'low';
+        // 'maintain-resolution' proibia encolher a imagem, entao o video
+        // insistia numa banda que nao existia. 'balanced' deixa ele ceder
+        // resolucao no aperto - e o audio passa inteiro.
+        prm.degradationPreference = 'balanced';
       });
     } else {
-      await ajusta(s, (prm) => { prm.encodings[0].maxBitrate = 256000; });
+      await ajusta(s, (prm) => {
+        prm.encodings[0].maxBitrate = 128000;
+        prm.encodings[0].networkPriority = 'high';
+        prm.encodings[0].priority = 'high';
+      });
     }
   }
 }
@@ -1050,6 +1079,8 @@ el.gateTh.oninput = () => {
 // ---------- volumes e "quem esta falando" ----------
 
 let volFilmeAlvo = 1;
+let duckLigado = false;   // o filme esta abaixado agora?
+let duckAte = 0;          // segura abaixado ate este instante
 
 function aplicarVolumes() {
   const filme = Number(el.volFilm.value) / 100;
@@ -1057,7 +1088,7 @@ function aplicarVolumes() {
   el.vFilm.textContent = el.volFilm.value + '%';
   el.vVoice.textContent = el.volVoice.value + '%';
 
-  const abaixa = el.duck.checked && falandoAgora ? 0.25 : 1;
+  const abaixa = duckLigado ? 0.35 : 1;
   volFilmeAlvo = (deaf ? 0 : filme) * abaixa;
 
   for (const p of peers.values()) {
@@ -1127,12 +1158,22 @@ function medir() {
     if (eu) alguem = true;
   }
 
-  if (alguem !== falandoAgora) { falandoAgora = alguem; aplicarVolumes(); }
+  falandoAgora = alguem;
 
-  // rampa suave: cortar o volume de uma vez soa pior que abaixar
+  // O filme so volta 700 ms depois da ultima fala. Sem essa espera, cada
+  // silabazinha - ou cada eco que abre o microfone de alguem - derruba o
+  // volume e devolve logo em seguida. De longe soa como se o som do filme
+  // ficasse sumindo sozinho de tempos em tempos.
+  if (alguem) duckAte = agora + 700;
+  const ligado = el.duck.checked && agora < duckAte;
+  if (ligado !== duckLigado) { duckLigado = ligado; aplicarVolumes(); }
+
+  // e a volta e bem mais lenta que a descida: abaixar rapido nao incomoda,
+  // subir rapido chama atencao
   const v = el.video.volume;
-  if (Math.abs(v - volFilmeAlvo) > 0.01) {
-    el.video.volume = Math.max(0, Math.min(1, v + (volFilmeAlvo - v) * 0.25));
+  if (Math.abs(v - volFilmeAlvo) > 0.005) {
+    const passo = volFilmeAlvo < v ? 0.3 : 0.05;
+    el.video.volume = Math.max(0, Math.min(1, v + (volFilmeAlvo - v) * passo));
   }
 
   registrarEnvelopes();
@@ -1209,6 +1250,56 @@ function procurarEco() {
 
 setInterval(procurarEco, 4000);
 
+// ---------- vigia do som que some ----------
+//
+// Quando o som do filme corta "de tempos em tempos", so existem duas
+// explicacoes: ou alguem daqui abaixou o volume (o abafador, a surdina), ou o
+// audio nao chegou. As duas soam igual pro ouvido, e so a segunda aparece nas
+// estatisticas: concealedSamples conta as amostras que o navegador INVENTOU
+// pra tapar buraco de pacote perdido. Passou de ~1% do que chegou, da pra
+// ouvir. Passou de 3%, corta feio.
+
+let avisoRedeEm = -1e9;
+
+async function vigiarSom() {
+  for (const p of peers.values()) {
+    if (p.pc.connectionState !== 'connected') continue;
+
+    let st;
+    try { st = await p.pc.getStats(); } catch { continue; }
+
+    let cortes = 0, amostras = 0;
+    st.forEach((r) => {
+      if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+        cortes += r.concealedSamples || 0;
+        amostras += r.totalSamplesReceived || 0;
+      }
+    });
+
+    const ant = p.somAnt;
+    p.somAnt = { cortes, amostras };
+    if (!ant) continue;
+
+    const dAmostras = amostras - ant.amostras;
+    if (dAmostras < 4000) continue; // quase nada chegou: nao da pra concluir
+    p.cortePct = ((cortes - ant.cortes) / dAmostras) * 100;
+
+    if (p.cortePct > 3 && performance.now() - avisoRedeEm > 120000) {
+      avisoRedeEm = performance.now();
+      sys('Audio de ' + p.name + ' chegando picotado (' + p.cortePct.toFixed(1) + '% perdido)');
+      aviso(
+        'O som esta <b>se perdendo no caminho</b>, nao sendo abaixado por filtro.<br>' +
+        'Mexer nas opcoes desta pagina nao resolve: falta banda entre voces.<br>' +
+        '&bull; quem transmite deve estar no <b>cabo</b> ou perto do roteador;<br>' +
+        '&bull; menos gente na sala = menos copias do video subindo;<br>' +
+        '&bull; feche downloads e outras abas de video na maquina de quem transmite.'
+      );
+    }
+  }
+}
+
+setInterval(vigiarSom, 2000);
+
 // Diagnostico: abra o console do navegador (F12) e digite  await cinemaDiag()
 window.cinemaDiag = async () => {
   const pessoas = [];
@@ -1223,15 +1314,35 @@ window.cinemaDiag = async () => {
       nivelAvisadoDb: p.nivelReportado,
       eco: p.eco,
       mutado: p.muted,
+      // % do audio que o navegador teve que inventar nos ultimos 2 s.
+      // Acima de 1 da pra ouvir; acima de 3 o som corta feio. Se este numero
+      // for zero e mesmo assim o som some, a causa e local (volume/filtro).
+      cortePct: p.cortePct === undefined ? null : +p.cortePct.toFixed(2),
     };
 
     try {
       const st = await p.pc.getStats();
-      const bytes = { recebeVoz: 0, recebeVideo: 0, mandaVoz: 0, mandaVideo: 0 };
+      const bytes = { recebeVoz: 0, recebeFilme: 0, recebeVideo: 0, mandaVoz: 0, mandaVideo: 0 };
       let par = null;
 
+      // as duas faixas de audio caem na mesma peneira; sem separar, uma
+      // sobrescreve a outra e o numero nao quer dizer nada
+      const idsVoz = p.audioEl && p.audioEl.srcObject
+        ? p.audioEl.srcObject.getAudioTracks().map((t) => t.id) : [];
+
       st.forEach((r) => {
-        if (r.type === 'inbound-rtp' && r.kind === 'audio') bytes.recebeVoz = r.bytesReceived;
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+          const ehVoz = idsVoz.includes(r.trackIdentifier);
+          if (ehVoz) bytes.recebeVoz = r.bytesReceived;
+          else bytes.recebeFilme = r.bytesReceived;
+          info[ehVoz ? 'voz' : 'filme'] = {
+            perda: r.packetsLost,
+            jitter: +(r.jitter || 0).toFixed(4),
+            // amostras que o navegador INVENTOU porque o pacote nao chegou
+            cortes: r.concealedSamples,
+            amostras: r.totalSamplesReceived,
+          };
+        }
         if (r.type === 'inbound-rtp' && r.kind === 'video') bytes.recebeVideo = r.bytesReceived;
         if (r.type === 'outbound-rtp' && r.kind === 'audio') bytes.mandaVoz = r.bytesSent;
         if (r.type === 'outbound-rtp' && r.kind === 'video') bytes.mandaVideo = r.bytesSent;
