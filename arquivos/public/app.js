@@ -58,6 +58,31 @@ let filmeBuf = null;
 let filmeStreamId = null;
 let filmeSrc = null;
 
+// ---------- WebKit: o Web Audio ROUBA o som ----------
+//
+// No Chrome da pra ligar a mesma faixa remota em dois lugares: o <audio>/<video>
+// toca e um AnalyserNode mede em paralelo. No WebKit (todo navegador do iPhone,
+// e o Safari do Mac) nao: assim que a faixa entra num createMediaStreamSource,
+// ela sai do elemento e nao volta. O analisador fica com o som e o alto-falante
+// fica com nada - o medidor mostrava -35 dB de filme com o iPhone mudo.
+//
+// A mesma cadeia quebra na saida: o createMediaStreamDestination do WebKit
+// entrega uma faixa que muitas vezes nao carrega audio nenhum pro WebRTC, e a
+// voz sai em 0 kbps pra sempre.
+//
+// Nos dois casos a saida e a mesma: no WebKit nao passa audio pelo Web Audio.
+// O que se perde e medidor, portao e filtro caseiro - e o iPhone ja faz
+// cancelamento de eco e supressao de ruido no proprio getUserMedia, que e a
+// parte que importa. O que se ganha e o som.
+const WEBKIT = (() => {
+  const ua = navigator.userAgent;
+  // iPad novo mente e diz que e Mac: touch no desktop entrega
+  const ehIOS = /iPhone|iPad|iPod/.test(ua)
+    || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const ehSafari = /Safari/.test(ua) && !/Chrome|Chromium|Android|CriOS|FxiOS|Edg/.test(ua);
+  return ehIOS || ehSafari;
+})();
+
 const MIC_CONSTRAINTS = {
   audio: {
     echoCancellation: true,   // cancela o som do filme que sai do seu alto-falante
@@ -320,10 +345,31 @@ function abrirPalco() {
   atualizarMic();
   atualizarBadge();
   iniciarMedidor();
+  if (WEBKIT) ajustarPainelWebkit();
   if (!micStream) {
     aviso('O microfone nao foi liberado - voce entrou <b>so ouvindo</b>.<br>' +
           'Para falar: libere o microfone nas permissoes do site e recarregue a pagina.');
   }
+}
+
+// No iPhone (e no Safari) metade destes controles e enfeite: o navegador nao
+// deixa a pagina mexer no volume de um elemento de midia, e o Web Audio nao
+// pode encostar nas faixas sem roubar o som delas. Deixar os controles ali,
+// sem efeito, e o caminho mais curto pra pessoa achar que o problema e ela.
+function ajustarPainelWebkit() {
+  for (const alvo of [el.gate, el.antieco, el.duck, $('gate-wrap')]) {
+    const cx = alvo === $('gate-wrap') ? alvo : alvo.closest('label');
+    if (cx) cx.classList.add('hidden');
+  }
+  const nota = document.createElement('p');
+  nota.className = 'nota-webkit';
+  nota.innerHTML =
+    'No <b>iPhone/Safari</b> quem manda no volume e o aparelho: os sliders acima ' +
+    'nao tem efeito aqui. Se nao sai som, confira a <b>chavinha do silencioso</b>, ' +
+    'os <b>botoes de volume enquanto o filme roda</b> e se ha fone/Bluetooth ' +
+    'ligado.<br>Filtro e portao de microfone ficam desligados: o proprio iOS ja ' +
+    'cancela eco e ruido.';
+  el.volFilm.closest('.mixer').append(nota);
 }
 
 // ---------- peers (malha: uma conexao com cada pessoa) ----------
@@ -642,7 +688,8 @@ function ligarVoz(p, s) {
 }
 
 function medidorFilme(s) {
-  if (!audioCtx || filmeStreamId === s.id || s.getAudioTracks().length === 0) return;
+  if (WEBKIT || !audioCtx) return;   // medir aqui deixaria o filme mudo
+  if (filmeStreamId === s.id || s.getAudioTracks().length === 0) return;
   try {
     // o no de origem tem que ficar guardado: sem ninguem apontando pra ele o
     // Chrome coleta o no e o medidor passa a devolver silencio pra sempre -
@@ -861,6 +908,9 @@ function pararMic() {
 
 function montarMic(raw) {
   if (!audioCtx) return raw;
+  // WebKit: a saida do Web Audio chega vazia no WebRTC. Melhor o mic cru, que
+  // ja vem com eco e ruido tratados pelo proprio sistema, do que voz muda.
+  if (WEBKIT) { micChain = null; return raw; }
   try {
     const src = audioCtx.createMediaStreamSource(raw);
 
@@ -1114,7 +1164,8 @@ el.duck.onchange = () => { aplicarVolumes(); salvarPrefs(); };
 // nunca soltava e o anti-eco entendia "tem gente falando o tempo todo" - o
 // portao do seu microfone nao abria mais.
 function medidorPara(p, s) {
-  if (!audioCtx || p.medStreamId === s.id) return;
+  if (WEBKIT || !audioCtx) return;   // medir aqui deixaria a voz muda
+  if (p.medStreamId === s.id) return;
   try {
     // guardar o no e obrigatorio: solto, o Chrome coleta e o medidor zera
     p.medSrc = audioCtx.createMediaStreamSource(s);
@@ -1134,7 +1185,11 @@ let meuBuf = null;
 let meuHold = 0;
 
 function iniciarMedidor() {
-  if (audioCtx && micStream && !meuAnalyser) {
+  // WEBKIT: derivar o microfone pro Web Audio esvazia a faixa que vai pro
+  // WebRTC - era isso que deixava "minha voz indo" em 0 kbps no iPhone. Sem
+  // medidor proprio o portao tambem nao roda, e nao faz falta: o iOS ja cancela
+  // eco e ruido dentro do getUserMedia.
+  if (audioCtx && micStream && !meuAnalyser && !WEBKIT) {
     try {
       meuSrc = audioCtx.createMediaStreamSource(micStream);
       meuAnalyser = audioCtx.createAnalyser();
@@ -1159,8 +1214,11 @@ function medir() {
   let alguem = false;
 
   for (const p of peers.values()) {
-    if (!p.analyser) continue;
-    if (!deaf && !p.muted && p.nivel > 0.02) p.holdUntil = agora + 350;
+    // Sem analisador (WebKit) o unico sinal de que essa pessoa esta falando e o
+    // aviso que ela mesma manda pelo 'state'. Antes o laco desistia no
+    // 'continue' e o iPhone nunca acendia nome nem acionava o abafador.
+    const alto = p.analyser ? p.nivel > 0.02 : p.falando;
+    if (!deaf && !p.muted && alto) p.holdUntil = agora + 350;
     const falando = agora < p.holdUntil;
     if (falando !== p.speaking) {
       p.speaking = falando;
@@ -1170,10 +1228,14 @@ function medir() {
   }
 
   if (meuAnalyser) {
-    if (micLive() && nivel(meuAnalyser, meuBuf) > 0.02) meuHold = agora + 350;
+    const meuNivel = nivel(meuAnalyser, meuBuf);
+    if (micLive() && meuNivel > 0.02) meuHold = agora + 350;
     const eu = agora < meuHold;
     if (myRow) myRow.classList.toggle('speaking', eu);
     if (eu) alguem = true;
+    // Sem cadeia de audio o tickGate nem roda, e e ele quem avisa "estou
+    // falando". Sem esse aviso o anti-eco dos outros fica cego pra este aqui.
+    if (!micChain) anunciarVoz(eu && micLive(), db(meuNivel));
   }
 
   falandoAgora = alguem;
@@ -1593,6 +1655,7 @@ async function lerDiag() {
     abafando: duckLigado,
     surdina: deaf,
     nivelFilmeDb: filmeAn ? +db(nivel(filmeAn, filmeBuf)).toFixed(1) : null,
+    webkit: WEBKIT,
     pessoas,
   };
 }
@@ -1632,6 +1695,12 @@ function vereditoDiag(d) {
   if (dono && dono.cortePct > 3) {
     return ['ruim', 'O som chega <b>picotado</b> (' + dono.cortePct.toFixed(1) +
                     '% perdido no caminho). Falta banda entre voces.'];
+  }
+  if (WEBKIT) {
+    return ['ok', 'Som do filme chegando e tocando. Se nao sai nada no iPhone, o resto e ' +
+                  'do proprio aparelho: <b>chavinha do lado esquerdo</b> (modo silencioso), ' +
+                  'os botoes de volume <b>enquanto o filme roda</b>, ou fone/Bluetooth ' +
+                  'conectado levando o som pra outro lugar.'];
   }
   return ['ok', 'Som do filme chegando e tocando. Se mesmo assim nao sai nada, o problema ' +
                 'esta fora da pagina: volume do sistema ou saida de audio errada.'];
@@ -1687,6 +1756,7 @@ function renderDiag(d) {
   dgLinha(aqui, 'Nivel do filme',
           d.nivelFilmeDb === null ? 'sem medidor' : d.nivelFilmeDb + ' dB',
           d.nivelFilmeDb === null ? '' : d.nivelFilmeDb < -75 ? 'ruim' : 'ok');
+  dgLinha(aqui, 'Motor de audio', d.webkit ? 'WebKit (medidor desligado)' : 'padrao');
   corpo.append(aqui);
 
   if (!d.pessoas.length) {
@@ -1733,7 +1803,7 @@ function diagTexto(d) {
       ' euTransmitindo=' + d.euTransmitindo +
       ' recebendoDe=' + (d.recebendoDe || '-'),
     'tela: video=' + d.temTela + ' faixaAudio=' + d.temFaixaAudio +
-      ' seguradoPeloNavegador=' + d.segurado,
+      ' seguradoPeloNavegador=' + d.segurado + ' webkit=' + d.webkit,
     'volumeReal=' + d.volumeFilme + '% slider=' + d.sliderFilme + '%' +
       ' abafando=' + d.abafando + ' surdina=' + d.surdina +
       ' nivelFilme=' + (d.nivelFilmeDb === null ? 'sem medidor' : d.nivelFilmeDb + 'dB'),

@@ -322,3 +322,10 @@ video { width: 100%; height: 100%; object-fit: contain; background: #000; displa
 .dg-l i.ok { color: var(--verde); }
 .dg-l i.ruim { color: var(--accent); }
 .dg-l i.meio { color: #e8b84b; }
+
+.nota-webkit {
+  margin: 4px 0 0; padding: 10px 11px;
+  background: #15171e; border: 1px solid var(--line); border-radius: 9px;
+  color: var(--dim); font-size: 12px; line-height: 1.55;
+}
+.nota-webkit b { color: var(--fg); }
