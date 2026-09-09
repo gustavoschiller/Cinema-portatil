@@ -215,7 +215,7 @@ video { width: 100%; height: 100%; object-fit: contain; background: #000; displa
 .log { flex: 1; overflow-y: auto; padding: 10px; font-size: 13.5px; }
 .log .msg { margin-bottom: 7px; word-break: break-word; }
 .log .who { color: var(--accent); font-weight: 600; }
-.log .sys { color: var(--dim); font-style: italic; }
+.log .sys { color: var(--dim); font-style: italic; white-space: pre-wrap; }
 #chat-form { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
 #chat-form input { flex: 1; padding: 8px 10px; font-size: 13.5px; }
 #chat-form button { flex: none; width: 38px; padding: 0; }
@@ -262,5 +262,63 @@ video { width: 100%; height: 100%; object-fit: contain; background: #000; displa
   .side.aberta { transform: none; }
   .only-mobile { display: block; }
   .chat { left: 12px; width: auto; }
+  .diag { left: 12px; right: 12px; width: auto; }
   .ctrl.wide span { display: none; }
 }
+
+/* ---------- diagnostico do som ---------- */
+.diag {
+  position: absolute; left: 12px; top: 12px; bottom: 12px;
+  width: 340px; max-width: calc(100% - 24px);
+  display: flex; flex-direction: column;
+  background: #0b0c10f2; backdrop-filter: blur(8px);
+  border: 1px solid var(--line); border-radius: 12px;
+  overflow: hidden; z-index: 6;
+}
+.diag-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+  font-size: 13.5px; font-weight: 600;
+}
+.diag-head span { flex: 1; }
+.diag-x {
+  width: 26px; height: 26px; padding: 0; flex: none;
+  background: none; border: none; color: var(--dim); font-size: 13px;
+}
+.diag-x:hover { color: var(--fg); }
+
+.diag-veredito {
+  flex: none; margin: 10px 12px 0;
+  padding: 10px 12px; border-radius: 9px;
+  background: #15171e; border: 1px solid var(--line);
+  font-size: 12.5px; line-height: 1.55;
+}
+.diag-veredito.ruim { border-color: var(--accent); background: #1b1116; }
+.diag-veredito b { color: #ffb4a6; }
+
+.diag-body { flex: 1; overflow-y: auto; padding: 12px; font-size: 12.5px; }
+.diag-foot {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-top: 1px solid var(--line);
+}
+.diag-btn {
+  flex: none; padding: 7px 12px; font-size: 12.5px;
+  background: #1a1d26; border: 1px solid var(--line); color: var(--fg);
+}
+.diag-msg { color: var(--verde); font-size: 12px; }
+
+.dg { margin-bottom: 16px; }
+.dg:last-child { margin-bottom: 0; }
+.dg-t {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--dim); margin-bottom: 5px;
+}
+.dg-l {
+  display: flex; gap: 10px; align-items: baseline;
+  padding: 4px 0; border-bottom: 1px solid #ffffff0a;
+}
+.dg-l b { flex: 1; font-weight: 400; color: var(--dim); }
+.dg-l i { font-style: normal; text-align: right; font-variant-numeric: tabular-nums; }
+.dg-l i.ok { color: var(--verde); }
+.dg-l i.ruim { color: var(--accent); }
+.dg-l i.meio { color: #e8b84b; }

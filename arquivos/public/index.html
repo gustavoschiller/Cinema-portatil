@@ -56,6 +56,19 @@
       <button id="btn-unmute">🔇 Clique para ativar o som</button>
     </div>
 
+    <div id="diag" class="diag hidden">
+      <div class="diag-head">
+        <span>🩺 Diagnóstico do som</span>
+        <button id="diag-close" class="diag-x" title="Fechar">✕</button>
+      </div>
+      <div id="diag-veredito" class="diag-veredito"></div>
+      <div id="diag-body" class="diag-body"></div>
+      <div class="diag-foot">
+        <button id="diag-copiar" class="diag-btn">Copiar tudo</button>
+        <span id="diag-msg" class="diag-msg"></span>
+      </div>
+    </div>
+
     <div id="chat" class="chat hidden">
       <div id="log" class="log"></div>
       <form id="chat-form">
@@ -115,6 +128,7 @@
     <button id="btn-deaf"  class="ctrl" title="Silenciar tudo (D)">🎧</button>
     <button id="btn-share" class="ctrl wide" title="Transmitir a tela">🖥 Transmitir</button>
     <button id="btn-chat"  class="ctrl" title="Chat">💬</button>
+    <button id="btn-diag"  class="ctrl" title="Diagnóstico do som">🩺</button>
     <button id="btn-people" class="ctrl only-mobile" title="Participantes">👥</button>
     <button id="btn-full"  class="ctrl" title="Tela cheia">⛶</button>
     <button id="btn-leave" class="ctrl danger" title="Sair">✕</button>

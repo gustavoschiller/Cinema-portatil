@@ -17,6 +17,8 @@ const el = {
   antieco: $('antieco'), vPiso: $('v-piso'),
   btnMic: $('btn-mic'), btnDeaf: $('btn-deaf'), btnShare: $('btn-share'),
   audios: $('audios'),
+  diag: $('diag'), diagBody: $('diag-body'), diagVeredito: $('diag-veredito'),
+  diagMsg: $('diag-msg'),
 };
 
 // ---------- estado ----------
@@ -1492,6 +1494,301 @@ window.cinemaDiag = async () => {
     filtro: el.gate.checked,
     pessoas,
   };
+};
+
+
+// ---------- painel de diagnostico do som ----------
+//
+// Mesma informacao do cinemaDiag() acima, so que em portugues e sem F12.
+// Quando o som some, o que resolve e saber QUAL das quatro coisas aconteceu -
+// e ninguem vai abrir o console do navegador no meio do filme.
+
+const diagAnt = new Map();  // ultima leitura de bytes por pessoa, pra virar kbps
+let diagTimer = null;
+let diagUltimo = null;
+
+// bytes/ms x 8 = kbit/s. A taxa diz muito mais que o total acumulado: o total
+// cresce igual quando esta chegando agora e quando parou cinco minutos atras.
+function kbps(dBytes, dt) {
+  return dt > 0 ? Math.round((dBytes * 8) / dt) : 0;
+}
+
+async function lerDiag() {
+  const agora = performance.now();
+  const pessoas = [];
+
+  for (const p of peers.values()) {
+    const linha = {
+      nome: p.name,
+      conexao: p.pc.connectionState,
+      caminho: '-',
+      voz: 0, filme: 0, video: 0, mandaVoz: 0, mandaVideo: 0,
+      cortePct: p.cortePct,
+      transmitindo: sharerId === p.id,
+      temFaixaFilme: false,
+      medido: false,
+    };
+
+    let st = null;
+    try { st = await p.pc.getStats(); } catch { /* sem estatisticas */ }
+
+    if (st) {
+      const idsVoz = p.audioEl && p.audioEl.srcObject
+        ? p.audioEl.srcObject.getAudioTracks().map((t) => t.id) : [];
+      const bruto = { voz: 0, filme: 0, video: 0, mandaVoz: 0, mandaVideo: 0 };
+      let par = null;
+
+      st.forEach((r) => {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+          if (idsVoz.includes(r.trackIdentifier)) {
+            bruto.voz += r.bytesReceived || 0;
+          } else {
+            bruto.filme += r.bytesReceived || 0;
+            linha.temFaixaFilme = true;
+          }
+        }
+        if (r.type === 'inbound-rtp' && r.kind === 'video') bruto.video += r.bytesReceived || 0;
+        if (r.type === 'outbound-rtp' && r.kind === 'audio') bruto.mandaVoz += r.bytesSent || 0;
+        if (r.type === 'outbound-rtp' && r.kind === 'video') bruto.mandaVideo += r.bytesSent || 0;
+        if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') par = r;
+      });
+
+      // host = mesma rede, srflx = passou pelo STUN, relay = precisou de TURN
+      if (par) {
+        const loc = st.get(par.localCandidateId);
+        const rem = st.get(par.remoteCandidateId);
+        linha.caminho = (loc ? loc.candidateType : '?') + ' → ' + (rem ? rem.candidateType : '?');
+      } else {
+        linha.caminho = p.pc.connectionState === 'connected' ? 'fechando...' : 'ICE nao passou';
+      }
+
+      const ant = diagAnt.get(p.id);
+      diagAnt.set(p.id, Object.assign({ t: agora }, bruto));
+      if (ant) {
+        const dt = agora - ant.t;
+        linha.medido = true;
+        linha.voz = kbps(bruto.voz - ant.voz, dt);
+        linha.filme = kbps(bruto.filme - ant.filme, dt);
+        linha.video = kbps(bruto.video - ant.video, dt);
+        linha.mandaVoz = kbps(bruto.mandaVoz - ant.mandaVoz, dt);
+        linha.mandaVideo = kbps(bruto.mandaVideo - ant.mandaVideo, dt);
+      }
+    }
+
+    pessoas.push(linha);
+  }
+
+  const tela = el.video.srcObject;
+  return {
+    servidor: !!(ws && ws.readyState === 1),
+    micLiberado: !!micStream,
+    euTransmitindo: !!screenStream,
+    recebendoDe: sharerId && sharerId !== 'me' && peers.get(sharerId)
+      ? peers.get(sharerId).name : null,
+    temTela: !!(tela && tela.getVideoTracks().length),
+    temFaixaAudio: !!(tela && tela.getAudioTracks().length),
+    segurado: el.video.muted,
+    volumeFilme: Math.round(el.video.volume * 100),
+    sliderFilme: Number(el.volFilm.value),
+    abafando: duckLigado,
+    surdina: deaf,
+    nivelFilmeDb: filmeAn ? +db(nivel(filmeAn, filmeBuf)).toFixed(1) : null,
+    pessoas,
+  };
+}
+
+// A ordem importa: cada teste so faz sentido se o anterior passou. Nao adianta
+// falar de volume enquanto nao esta chegando byte nenhum.
+function vereditoDiag(d) {
+  if (!d.servidor) return ['ruim', 'O <b>servidor da sala caiu</b>. Recarregue a pagina.'];
+  if (d.euTransmitindo) {
+    return ['ok', 'Voce e quem transmite: aqui o filme fica <b>mudo de proposito</b>, ' +
+                  'porque ele ja toca direto na sua maquina. Quem tem que ouvir sao os outros.'];
+  }
+  if (!d.temTela) return ['ok', 'Ninguem esta transmitindo agora.'];
+  if (!d.temFaixaAudio) {
+    return ['ruim', 'A transmissao chegou <b>sem faixa de audio nenhuma</b>. Quem transmite ' +
+                    'precisa parar e transmitir de novo marcando <b>Compartilhar audio da guia</b>.'];
+  }
+
+  const dono = d.pessoas.find((x) => x.transmitindo);
+  if (dono && dono.medido && dono.filme < 2) {
+    return ['ruim', 'A imagem passa, mas o <b>som do filme nao esta chegando</b> (0 kbps). ' +
+                    'Peca pra quem transmite clicar em Parar e Transmitir de novo.'];
+  }
+  if (d.segurado) {
+    return ['ruim', 'O som chega, mas o navegador <b>segurou o audio</b>. Clique no botao ' +
+                    '<b>Clique para ativar o som</b>, no meio da tela.'];
+  }
+  if (d.surdina) return ['ruim', 'A <b>surdina</b> esta ligada (botao do fone, tecla D).'];
+  if (d.volumeFilme < 5) {
+    return ['ruim', 'O som chega e o navegador esta tocando - o <b>volume daqui</b> e que ' +
+                    'esta no chao. Suba o slider <b>Filme</b>.'];
+  }
+  if (d.nivelFilmeDb !== null && d.nivelFilmeDb < -75) {
+    return ['ruim', 'O som chega, mas vem <b>mudo</b>: silencio digital neste instante. ' +
+                    'Se o filme deveria estar tocando, quem transmite escolheu a aba errada.'];
+  }
+  if (dono && dono.cortePct > 3) {
+    return ['ruim', 'O som chega <b>picotado</b> (' + dono.cortePct.toFixed(1) +
+                    '% perdido no caminho). Falta banda entre voces.'];
+  }
+  return ['ok', 'Som do filme chegando e tocando. Se mesmo assim nao sai nada, o problema ' +
+                'esta fora da pagina: volume do sistema ou saida de audio errada.'];
+}
+
+function dgSecao(titulo) {
+  const d = document.createElement('div');
+  d.className = 'dg';
+  const t = document.createElement('div');
+  t.className = 'dg-t';
+  t.textContent = titulo;
+  d.append(t);
+  return d;
+}
+
+function dgLinha(pai, rotulo, valor, classe) {
+  const l = document.createElement('div');
+  l.className = 'dg-l';
+  const b = document.createElement('b');
+  b.textContent = rotulo;
+  const i = document.createElement('i');
+  if (classe) i.className = classe;
+  i.textContent = valor;
+  l.append(b, i);
+  pai.append(l);
+}
+
+function renderDiag(d) {
+  const [tom, texto] = vereditoDiag(d);
+  el.diagVeredito.className = 'diag-veredito' + (tom === 'ruim' ? ' ruim' : '');
+  el.diagVeredito.innerHTML = texto;
+
+  const corpo = document.createElement('div');
+
+  const aqui = dgSecao('aqui, nesta pagina');
+  dgLinha(aqui, 'Servidor da sala', d.servidor ? 'conectado' : 'CAIDO',
+          d.servidor ? 'ok' : 'ruim');
+  dgLinha(aqui, 'Meu microfone', d.micLiberado ? 'liberado' : 'negado',
+          d.micLiberado ? 'ok' : 'ruim');
+  dgLinha(aqui, 'Transmissao', d.euTransmitindo ? 'sou eu'
+    : d.recebendoDe ? 'de ' + d.recebendoDe : d.temTela ? 'recebendo' : 'ninguem');
+  dgLinha(aqui, 'Faixa de audio na tela', !d.temTela ? '-'
+    : d.temFaixaAudio ? 'existe' : 'NAO VEIO',
+          !d.temTela ? '' : d.temFaixaAudio ? 'ok' : 'ruim');
+  dgLinha(aqui, 'Navegador tocando', d.segurado ? 'SEGUROU' : 'sim',
+          d.segurado ? 'ruim' : 'ok');
+  dgLinha(aqui, 'Volume real do filme', d.volumeFilme + '%',
+          d.volumeFilme < 5 ? 'ruim' : d.volumeFilme < 50 ? 'meio' : 'ok');
+  dgLinha(aqui, 'Slider Filme', d.sliderFilme + '%');
+  dgLinha(aqui, 'Abafador agora', d.abafando ? 'abaixando' : 'parado',
+          d.abafando ? 'meio' : '');
+  dgLinha(aqui, 'Surdina', d.surdina ? 'LIGADA' : 'desligada', d.surdina ? 'ruim' : '');
+  dgLinha(aqui, 'Nivel do filme',
+          d.nivelFilmeDb === null ? 'sem medidor' : d.nivelFilmeDb + ' dB',
+          d.nivelFilmeDb === null ? '' : d.nivelFilmeDb < -75 ? 'ruim' : 'ok');
+  corpo.append(aqui);
+
+  if (!d.pessoas.length) {
+    const so = dgSecao('pessoas');
+    dgLinha(so, 'Ninguem na sala', 'so voce');
+    corpo.append(so);
+  }
+
+  for (const x of d.pessoas) {
+    const sec = dgSecao(x.nome + (x.transmitindo ? '  (transmitindo)' : ''));
+    dgLinha(sec, 'Conexao', x.conexao, x.conexao === 'connected' ? 'ok' : 'ruim');
+    dgLinha(sec, 'Caminho', x.caminho);
+    dgLinha(sec, 'Voz chegando', x.medido ? x.voz + ' kbps' : 'medindo...',
+            !x.medido ? '' : x.voz > 0 ? 'ok' : 'meio');
+    if (x.transmitindo || x.temFaixaFilme) {
+      dgLinha(sec, 'Filme chegando', x.medido ? x.filme + ' kbps' : 'medindo...',
+              !x.medido ? '' : x.filme > 2 ? 'ok' : 'ruim');
+      dgLinha(sec, 'Video chegando', x.medido ? x.video + ' kbps' : 'medindo...',
+              !x.medido ? '' : x.video > 20 ? 'ok' : 'meio');
+      dgLinha(sec, 'Som perdido no caminho',
+              x.cortePct === undefined ? 'medindo...' : x.cortePct.toFixed(1) + '%',
+              x.cortePct === undefined ? '' : x.cortePct > 3 ? 'ruim'
+                : x.cortePct > 1 ? 'meio' : 'ok');
+    }
+    dgLinha(sec, 'Minha voz indo', x.medido ? x.mandaVoz + ' kbps' : 'medindo...');
+    if (d.euTransmitindo) {
+      dgLinha(sec, 'Meu video indo', x.medido ? x.mandaVideo + ' kbps' : 'medindo...',
+              !x.medido ? '' : x.mandaVideo > 20 ? 'ok' : 'ruim');
+    }
+    corpo.append(sec);
+  }
+
+  el.diagBody.replaceChildren(...corpo.childNodes);
+}
+
+// versao em texto, pra colar num chat ou mandar pra quem for consertar
+function diagTexto(d) {
+  const linhas = [
+    'DIAGNOSTICO DO SOM - sala ' + room + ' - ' + new Date().toLocaleString('pt-BR'),
+    'veredito: ' + vereditoDiag(d)[1].replace(/<[^>]+>/g, ''),
+    '',
+    'servidor=' + (d.servidor ? 'ok' : 'CAIDO') +
+      ' mic=' + (d.micLiberado ? 'ok' : 'negado') +
+      ' euTransmitindo=' + d.euTransmitindo +
+      ' recebendoDe=' + (d.recebendoDe || '-'),
+    'tela: video=' + d.temTela + ' faixaAudio=' + d.temFaixaAudio +
+      ' seguradoPeloNavegador=' + d.segurado,
+    'volumeReal=' + d.volumeFilme + '% slider=' + d.sliderFilme + '%' +
+      ' abafando=' + d.abafando + ' surdina=' + d.surdina +
+      ' nivelFilme=' + (d.nivelFilmeDb === null ? 'sem medidor' : d.nivelFilmeDb + 'dB'),
+    '',
+  ];
+  for (const x of d.pessoas) {
+    linhas.push('[' + x.nome + ']' + (x.transmitindo ? ' TRANSMITINDO' : ''));
+    linhas.push('  conexao=' + x.conexao + ' caminho=' + x.caminho);
+    linhas.push('  recebe voz=' + x.voz + 'kbps filme=' + x.filme +
+                'kbps video=' + x.video + 'kbps');
+    linhas.push('  envia voz=' + x.mandaVoz + 'kbps video=' + x.mandaVideo + 'kbps');
+    linhas.push('  perdido=' + (x.cortePct === undefined ? '-' : x.cortePct.toFixed(2) + '%'));
+  }
+  return linhas.join('\n');
+}
+
+async function tickDiag() {
+  diagUltimo = await lerDiag();
+  renderDiag(diagUltimo);
+}
+
+// a primeira leitura so guarda os totais; a taxa em kbps aparece na segunda
+function abrirDiag() {
+  el.diag.classList.remove('hidden');
+  el.diagMsg.textContent = '';
+  tickDiag();
+  clearInterval(diagTimer);
+  diagTimer = setInterval(tickDiag, 1000);
+}
+
+function fecharDiag() {
+  el.diag.classList.add('hidden');
+  clearInterval(diagTimer);
+  diagTimer = null;
+  diagAnt.clear();   // taxa velha nao vale nada quando o painel reabrir
+}
+
+$('btn-diag').onclick = () =>
+  (el.diag.classList.contains('hidden') ? abrirDiag() : fecharDiag());
+$('diag-close').onclick = fecharDiag;
+
+$('diag-copiar').onclick = async () => {
+  if (!diagUltimo) return;
+  const txt = diagTexto(diagUltimo);
+  try {
+    await navigator.clipboard.writeText(txt);
+    el.diagMsg.textContent = 'copiado';
+  } catch {
+    // area de transferencia bloqueada (http, permissao): joga no chat, que da
+    // pra selecionar com o mouse - e abre o chat, senao cai num painel fechado
+    sys(txt);
+    el.chat.classList.remove('hidden');
+    el.diagMsg.textContent = 'nao deu pra copiar - joguei no chat';
+  }
+  setTimeout(() => { el.diagMsg.textContent = ''; }, 2500);
 };
 
 // ---------- lista de pessoas ----------
