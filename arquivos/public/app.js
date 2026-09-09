@@ -54,6 +54,7 @@ let falandoAgora = false;
 let filmeAn = null;        // medidor do filme, usado pelo anti-eco
 let filmeBuf = null;
 let filmeStreamId = null;
+let filmeSrc = null;
 
 const MIC_CONSTRAINTS = {
   audio: {
@@ -340,6 +341,7 @@ function addPeer({ id, name, state }) {
     falando: false, nivelReportado: -120,
     muted: false, speaking: false, holdUntil: 0,
     audioEl: null, analyser: null, buf: null, nivel: 0,
+    medSrc: null, medStreamId: null,
     // -1e9: "nunca avisei". Zero nao serve porque performance.now() comeca
     // do zero e o primeiro aviso ficaria travado pelos dois minutos iniciais.
     env: [], eco: 0, avisadoEm: -1e9,
@@ -640,13 +642,16 @@ function ligarVoz(p, s) {
 function medidorFilme(s) {
   if (!audioCtx || filmeStreamId === s.id || s.getAudioTracks().length === 0) return;
   try {
-    const src = audioCtx.createMediaStreamSource(s);
+    // o no de origem tem que ficar guardado: sem ninguem apontando pra ele o
+    // Chrome coleta o no e o medidor passa a devolver silencio pra sempre -
+    // e o silencio aqui faz o anti-eco achar que ninguem esta tocando nada
+    filmeSrc = audioCtx.createMediaStreamSource(s);
     filmeAn = audioCtx.createAnalyser();
     filmeAn.fftSize = 512;
     filmeBuf = new Float32Array(filmeAn.fftSize);
-    src.connect(filmeAn);
+    filmeSrc.connect(filmeAn);
     filmeStreamId = s.id;
-  } catch { filmeAn = null; }
+  } catch { filmeAn = null; filmeSrc = null; }
 }
 
 function ligarTela(p, s) {
@@ -671,6 +676,7 @@ function limparPalco(texto) {
   sharerId = null;
   filmeAn = null;
   filmeStreamId = null;
+  filmeSrc = null;
   el.video.srcObject = null;
   el.video.muted = false;
   el.overlay.classList.remove('hidden');
@@ -1100,30 +1106,40 @@ el.volFilm.oninput = () => aplicarVolumes();
 el.volVoice.oninput = () => aplicarVolumes();
 el.duck.onchange = () => { aplicarVolumes(); salvarPrefs(); };
 
+// Antes isto media a PRIMEIRA faixa que aparecesse e nunca mais trocava. Se a
+// negociacao entregasse o audio do filme antes do anuncio 'ids' chegar, o
+// medidor ficava preso no filme: p.nivel virava o volume do filme, o abafador
+// nunca soltava e o anti-eco entendia "tem gente falando o tempo todo" - o
+// portao do seu microfone nao abria mais.
 function medidorPara(p, s) {
-  if (!audioCtx || p.analyser) return;
+  if (!audioCtx || p.medStreamId === s.id) return;
   try {
-    const src = audioCtx.createMediaStreamSource(s);
+    // guardar o no e obrigatorio: solto, o Chrome coleta e o medidor zera
+    p.medSrc = audioCtx.createMediaStreamSource(s);
     p.analyser = audioCtx.createAnalyser();
     p.analyser.fftSize = 512;
     p.buf = new Float32Array(p.analyser.fftSize);
-    src.connect(p.analyser); // analyser sem destino: so mede, nao toca
-  } catch { p.analyser = null; }
+    p.nivel = 0;
+    p.env = [];
+    p.medSrc.connect(p.analyser); // analyser sem destino: so mede, nao toca
+    p.medStreamId = s.id;
+  } catch { p.analyser = null; p.medSrc = null; p.medStreamId = null; }
 }
 
 let meuAnalyser = null;
+let meuSrc = null;
 let meuBuf = null;
 let meuHold = 0;
 
 function iniciarMedidor() {
   if (audioCtx && micStream && !meuAnalyser) {
     try {
-      const src = audioCtx.createMediaStreamSource(micStream);
+      meuSrc = audioCtx.createMediaStreamSource(micStream);
       meuAnalyser = audioCtx.createAnalyser();
       meuAnalyser.fftSize = 512;
       meuBuf = new Float32Array(meuAnalyser.fftSize);
-      src.connect(meuAnalyser);
-    } catch { meuAnalyser = null; }
+      meuSrc.connect(meuAnalyser); // guardado, senao o Chrome coleta o no
+    } catch { meuAnalyser = null; meuSrc = null; }
   }
   setInterval(medir, 100);
   setInterval(tickGate, 25); // o portao precisa reagir mais rapido que a UI
@@ -1268,13 +1284,29 @@ async function vigiarSom() {
     let st;
     try { st = await p.pc.getStats(); } catch { continue; }
 
-    let cortes = 0, amostras = 0;
+    // As duas faixas de audio caem na mesma peneira, e somar as duas estraga a
+    // conta: a voz vai com DTX, entao quando o portao fecha ela PARA de mandar
+    // pacote e o navegador conta esse silencio como amostra inventada. Com o
+    // portao fechado a maior parte do tempo, a soma passava de 3% sozinha e o
+    // aviso disparava com a rede inteira. Aqui so o filme e julgado, e o
+    // silencio inventado de proposito (silentConcealedSamples) sai da conta.
+    const idsVoz = p.audioEl && p.audioEl.srcObject
+      ? p.audioEl.srcObject.getAudioTracks().map((t) => t.id) : [];
+
+    let cortes = 0, amostras = 0, bytes = 0, achouFilme = false;
     st.forEach((r) => {
-      if (r.type === 'inbound-rtp' && r.kind === 'audio') {
-        cortes += r.concealedSamples || 0;
-        amostras += r.totalSamplesReceived || 0;
-      }
+      if (r.type !== 'inbound-rtp' || r.kind !== 'audio') return;
+      if (idsVoz.includes(r.trackIdentifier)) return;
+      achouFilme = true;
+      cortes += (r.concealedSamples || 0) - (r.silentConcealedSamples || 0);
+      amostras += r.totalSamplesReceived || 0;
+      bytes += r.bytesReceived || 0;
     });
+
+    diagnosticarMudo(p, achouFilme ? bytes : null);
+
+    // sem faixa de filme nao ha o que vigiar, e a conta velha nao serve mais
+    if (!achouFilme) { p.somAnt = null; p.cortePct = undefined; continue; }
 
     const ant = p.somAnt;
     p.somAnt = { cortes, amostras };
@@ -1282,7 +1314,9 @@ async function vigiarSom() {
 
     const dAmostras = amostras - ant.amostras;
     if (dAmostras < 4000) continue; // quase nada chegou: nao da pra concluir
-    p.cortePct = ((cortes - ant.cortes) / dAmostras) * 100;
+    // Math.max(0, ...): contador que reinicia (renegociacao, ICE restart) daria
+    // delta negativo agora e um pico absurdo na leitura seguinte
+    p.cortePct = (Math.max(0, cortes - ant.cortes) / dAmostras) * 100;
 
     if (p.cortePct > 3 && performance.now() - avisoRedeEm > 120000) {
       avisoRedeEm = performance.now();
@@ -1299,6 +1333,64 @@ async function vigiarSom() {
 }
 
 setInterval(vigiarSom, 2000);
+
+// ---------- "nao sai som nenhum" ----------
+//
+// Quatro coisas diferentes soam exatamente igual: o audio do filme nao chega;
+// chega e o navegador esta segurando o autoplay; chega e o volume daqui esta
+// no chao; chega e vem mudo da origem (a pessoa compartilhou a aba errada).
+// O aviso de rede acusava a rede em todos os quatro casos. Aqui cada um e
+// medido, e so o culpado aparece.
+
+let avisoMudoEm = -1e9;
+
+function diagnosticarMudo(p, bytes) {
+  if (sharerId !== p.id || bytes === null) {
+    p.bytesFilmeAnt = undefined;
+    p.semBytes = 0;
+    p.semNivel = 0;
+    return;
+  }
+
+  const ant = p.bytesFilmeAnt;
+  p.bytesFilmeAnt = bytes;
+  if (ant === undefined) return;
+
+  // ~2 kbps de piso: abaixo disso nao esta chegando audio nenhum
+  p.semBytes = bytes - ant > 500 ? 0 : (p.semBytes || 0) + 1;
+
+  // silencio digital de verdade, nao cena calada: -75 dB por 30 s seguidos
+  const mudoAgora = filmeAn && db(nivel(filmeAn, filmeBuf)) < -75;
+  p.semNivel = mudoAgora ? (p.semNivel || 0) + 1 : 0;
+
+  if (performance.now() - avisoMudoEm < 120000) return;
+  // ligarTela ja avisa quando a transmissao vem sem faixa de audio nenhuma
+  if (!el.video.srcObject || el.video.srcObject.getAudioTracks().length === 0) return;
+
+  let texto = null;
+  if (p.semBytes >= 3) {
+    texto = 'A imagem passa, mas a <b>faixa de som do filme nao esta chegando</b> ' +
+            'aqui.<br>Peca pra ' + esc(p.name) + ' clicar em <b>Parar</b> e ' +
+            '<b>Transmitir</b> de novo.';
+  } else if (el.video.muted) {
+    el.unmute.classList.remove('hidden');
+    texto = 'O som do filme esta chegando, mas o navegador <b>segurou o audio</b>.<br>' +
+            'Clique em <b>Clique para ativar o som</b>, no meio da tela.';
+  } else if (el.video.volume < 0.05) {
+    texto = 'O som do filme esta chegando e o navegador esta tocando - o volume ' +
+            '<b>daqui</b> e que esta no chao.<br>Confira o slider <b>Filme</b> e o ' +
+            'botao de <b>surdina</b> (o fone, tecla D).';
+  } else if (p.semNivel >= 15) {
+    texto = 'O som do filme chega, mas vem <b>mudo da origem</b>.<br>' +
+            esc(p.name) + ' compartilhou uma aba que nao esta tocando som. ' +
+            'Tem que ser a aba do filme, com <b>Compartilhar audio da guia</b> marcado.';
+  }
+  if (!texto) return;
+
+  avisoMudoEm = performance.now();
+  sys('Som do filme mudo aqui - ver o aviso na tela');
+  aviso(texto);
+}
 
 // Diagnostico: abra o console do navegador (F12) e digite  await cinemaDiag()
 window.cinemaDiag = async () => {
